@@ -1,11 +1,15 @@
-# SISURB MCP — Juiz de Fora
+# SISURB MCP Juiz de Fora — v4
 
-Servidor MCP remoto para o Claude consultar automaticamente o cadastro de lotes do SISURB.
+MCP remoto para Claude com:
+- buscar_lote_sisurb(endereco)
+- consultar_zoneamento_sisurb(nome_zona)
+- consultar_legislacao_jf(zona, modelo, categoria_uso)
+- calcular_potencial_preliminar(...)
 
-Ferramenta: `buscar_lote_sisurb(endereco)`
+Endpoint esperado no Render:
+https://SEU-SERVICO.onrender.com/mcp
 
-Exemplo: `Rua São Mateus, 490`
-
-Camada oficial: SISURB/PJF — uso_cad_lotes / MapServer/158.
-
-Endpoint MCP após publicação: `https://SEU-SERVICO.onrender.com/mcp`
+A v4 mantém a busca de lote e acrescenta consulta do zoneamento vigente,
+referência à Lei 6.910/1986 e cálculo preliminar. Valores legislativos não
+confirmados ficam explicitamente como pendentes; o servidor não deve inventar
+recuos ou envelope construtivo.
