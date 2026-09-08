@@ -17,6 +17,11 @@ ZONEAMENTO_URL = (
     "uso_zon_zoneamento_urbano_pjf/MapServer/167/query"
 )
 
+RESTRICOES_URL = (
+    "https://sisurb.pjf.mg.gov.br/server/rest/services/"
+    "SISURB_peus/anl_areas_restricao_P6/MapServer/0/query"
+)
+
 # Lei 6.910/1986, com alterações posteriores.
 # A matriz abaixo reproduz somente informações que conseguimos confirmar
 # na legislação consolidada consultada. Campos não confirmados ficam nulos.
@@ -122,14 +127,23 @@ def norm(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip().upper()
     return s
 
-def arcgis_query(url, where, out_fields, return_geometry=False):
+def arcgis_query(url, where, out_fields, return_geometry=False, geometry=None,
+                 geometry_type=None, spatial_rel=None, out_sr=None, timeout=45):
     params = {
         "where": where,
         "outFields": out_fields,
         "returnGeometry": "true" if return_geometry else "false",
         "f": "json",
     }
-    r = requests.get(url, params=params, timeout=30)
+    if geometry is not None:
+        params["geometry"] = geometry if isinstance(geometry, str) else __import__("json").dumps(geometry, separators=(",", ":"))
+    if geometry_type:
+        params["geometryType"] = geometry_type
+    if spatial_rel:
+        params["spatialRel"] = spatial_rel
+    if out_sr:
+        params["outSR"] = str(out_sr)
+    r = requests.get(url, params=params, timeout=timeout)
     r.raise_for_status()
     data = r.json()
     if "error" in data:
@@ -138,7 +152,7 @@ def arcgis_query(url, where, out_fields, return_geometry=False):
 
 @mcp.tool()
 def buscar_lote_sisurb(endereco: str) -> dict:
-    """Busca automaticamente o lote cadastral/urbanístico do SISURB pelo endereço."""
+    """Busca o lote no SISURB por endereço e, quando possível, retorna sua geometria para análises espaciais."""
     if not endereco or not endereco.strip():
         return {"ok": False, "erro": "Informe um endereço."}
 
@@ -156,40 +170,203 @@ def buscar_lote_sisurb(endereco: str) -> dict:
         "fonte,ano,area_geometria"
     )
 
-    # Tentativa principal: endereço completo.
-    where = f"UPPER(endereco) LIKE '%{q}%'"
-    data = arcgis_query(LOTES_URL, where, fields)
+    queries = []
+    # 1) igualdade exata normalizada para evitar consultas LIKE excessivamente amplas.
+    queries.append(f"UPPER(endereco) = '{q}'")
+    # 2) endereço completo contido.
+    queries.append(f"UPPER(endereco) LIKE '%{q}%'")
 
-    # Fallback: separa número do nome da via.
-    if not data.get("features"):
-        m = re.match(r"^(.*?)[,\s]+(\d+[A-Z]?)$", endereco.strip(), re.I)
-        if m:
-            rua = norm(m.group(1)).replace("'", "''")
-            numero = m.group(2).replace("'", "''")
-            where = (
-                f"UPPER(endereco) LIKE '%{rua}%' "
-                f"AND UPPER(endereco) LIKE '%{numero}%'"
-            )
-            data = arcgis_query(LOTES_URL, where, fields)
+    # 3) fallback: separa número e nome da via.
+    m = re.match(r"^(.*?)[,\s]+(\d+[A-Z]?)$", endereco.strip(), re.I)
+    if m:
+        rua = norm(m.group(1)).replace("'", "''")
+        numero = m.group(2).replace("'", "''")
+        queries.append(
+            f"UPPER(endereco) LIKE '%{rua}%' AND UPPER(endereco) LIKE '%{numero}%'"
+        )
 
-    feats = data.get("features", [])
+    feats = []
+    last_error = None
+    for where in queries:
+        try:
+            data = arcgis_query(LOTES_URL, where, fields, timeout=45)
+            feats = data.get("features", [])
+            if feats:
+                break
+        except Exception as exc:
+            last_error = str(exc)
+
     if not feats:
         return {
             "ok": False,
             "erro": "Nenhum lote encontrado no SISURB para o endereço informado.",
+            "detalhe_tecnico": last_error,
             "fonte": LOTES_URL,
         }
 
     resultados = [f.get("attributes", {}) for f in feats[:10]]
+    # Recupera a geometria somente dos resultados encontrados, em chamadas individuais.
+    # Isso reduz o risco de timeout e permite que a consulta de restrições use o polígono real.
+    geometria = []
+    for f in feats[:10]:
+        attrs = f.get("attributes", {})
+        oid = attrs.get("OBJECTID")
+        if oid is None:
+            continue
+        try:
+            gd = arcgis_query(
+                LOTES_URL,
+                f"OBJECTID = {int(oid)}",
+                "OBJECTID,geocodigo,id_lote,endereco,area_geometria",
+                return_geometry=True,
+                out_sr=31983,
+                timeout=45,
+            )
+            gf = gd.get("features", [])
+            if gf and gf[0].get("geometry"):
+                geometria.append({
+                    "OBJECTID": oid,
+                    "geocodigo": attrs.get("geocodigo"),
+                    "id_lote": attrs.get("id_lote"),
+                    "geometry": gf[0]["geometry"],
+                    "spatial_reference": gf[0]["geometry"].get("spatialReference", {"wkid":31983}),
+                })
+        except Exception:
+            # A falha na geometria não invalida a identificação cadastral.
+            continue
+
     return {
         "ok": True,
         "quantidade_resultados": len(resultados),
         "resultados": resultados,
+        "geometrias": geometria,
+        "geometria_disponivel": bool(geometria),
+        "sistema_referencia_geometria": 31983,
         "fonte": LOTES_URL,
         "observacao": (
-            "Dados cadastrais/urbanísticos do SISURB. "
+            "Dados cadastrais/urbanísticos do SISURB. A geometria é retornada "
+            "quando disponível para permitir consultas espaciais de restrições. "
             "Campos estimados devem permanecer identificados como estimados."
         ),
+    }
+
+@mcp.tool()
+def consultar_restricoes_sisurb(geometria_lote: dict) -> dict:
+    """Consulta por interseção espacial as áreas de restrição do SISURB para a geometria do lote."""
+    if not geometria_lote:
+        return {"ok": False, "status": "PENDENTE", "erro": "Geometria do lote não informada."}
+
+    # Aceita tanto a geometria ArcGIS pura quanto o objeto retornado por buscar_lote_sisurb.
+    geometry = geometria_lote.get("geometry", geometria_lote) if isinstance(geometria_lote, dict) else geometria_lote
+    if not isinstance(geometry, dict) or not geometry.get("rings"):
+        return {"ok": False, "status": "PENDENTE", "erro": "Geometria de lote inválida ou sem anéis poligonais."}
+
+    fields = "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano,shape.STArea()"
+    try:
+        data = arcgis_query(
+            RESTRICOES_URL,
+            "1=1",
+            fields,
+            return_geometry=False,
+            geometry=geometry,
+            geometry_type="esriGeometryPolygon",
+            spatial_rel="esriSpatialRelIntersects",
+            out_sr=31983,
+            timeout=45,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "PENDENTE",
+            "erro": "Falha na consulta espacial da camada de restrições.",
+            "detalhe_tecnico": str(exc),
+            "fonte": RESTRICOES_URL,
+        }
+
+    feats = data.get("features", [])
+    restricoes = [f.get("attributes", {}) for f in feats]
+    return {
+        "ok": True,
+        "status": "SEM RESTRIÇÃO IDENTIFICADA" if not restricoes else "RESTRIÇÃO IDENTIFICADA",
+        "quantidade": len(restricoes),
+        "restricoes": restricoes,
+        "fonte": RESTRICOES_URL,
+        "metodo": "interseção espacial do polígono do lote com a camada oficial de áreas de restrição",
+        "observacao": "A ausência de interseção nesta camada não exclui outras limitações legais ou ambientais que estejam fora desta camada."
+    }
+
+
+@mcp.tool()
+def consultar_restricoes_por_lote(endereco: str = "", id_lote: str = "", geocodigo: str = "") -> dict:
+    """Localiza o lote e verifica automaticamente sua interseção com áreas de restrição do SISURB."""
+    if not any([endereco.strip(), str(id_lote).strip(), geocodigo.strip()]):
+        return {"ok": False, "status": "PENDENTE", "erro": "Informe endereço, id_lote ou geocódigo."}
+
+    fields = (
+        "OBJECTID,geocodigo,id_lote,id_lote_pjf,id_lote_2,endereco,area_geometria"
+    )
+    where = None
+    if geocodigo.strip():
+        q = geocodigo.strip().replace("'", "''")
+        where = f"geocodigo = '{q}'"
+    elif str(id_lote).strip():
+        try:
+            where = f"id_lote = {int(float(id_lote))}"
+        except Exception:
+            q = str(id_lote).strip().replace("'", "''")
+            where = f"id_lote = '{q}'"
+    else:
+        q = norm(endereco).replace("'", "''")
+        where = f"UPPER(endereco) = '{q}'"
+
+    try:
+        data = arcgis_query(
+            LOTES_URL, where, fields, return_geometry=True, out_sr=31983, timeout=45
+        )
+        feats = data.get("features", [])
+        if not feats and endereco:
+            q = norm(endereco).replace("'", "''")
+            data = arcgis_query(
+                LOTES_URL, f"UPPER(endereco) LIKE '%{q}%'", fields,
+                return_geometry=True, out_sr=31983, timeout=45
+            )
+            feats = data.get("features", [])
+    except Exception as exc:
+        return {"ok": False, "status": "PENDENTE", "erro": "Falha ao localizar a geometria do lote.", "detalhe_tecnico": str(exc), "fonte": LOTES_URL}
+
+    if not feats:
+        return {"ok": False, "status": "PENDENTE", "erro": "Lote não encontrado para consulta espacial.", "fonte": LOTES_URL}
+
+    resultados = []
+    for f in feats[:10]:
+        attrs = f.get("attributes", {})
+        geometry = f.get("geometry")
+        if not geometry:
+            continue
+        try:
+            rd = arcgis_query(
+                RESTRICOES_URL, "1=1",
+                "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano,shape.STArea()",
+                geometry=geometry, geometry_type="esriGeometryPolygon",
+                spatial_rel="esriSpatialRelIntersects", out_sr=31983, timeout=45
+            )
+            restricoes = [x.get("attributes", {}) for x in rd.get("features", [])]
+            resultados.append({
+                "lote": attrs,
+                "status": "SEM RESTRIÇÃO IDENTIFICADA" if not restricoes else "RESTRIÇÃO IDENTIFICADA",
+                "quantidade_restricoes": len(restricoes),
+                "restricoes": restricoes,
+            })
+        except Exception as exc:
+            resultados.append({"lote": attrs, "status": "PENDENTE", "erro": str(exc)})
+
+    return {
+        "ok": bool(resultados),
+        "status": "CONCLUÍDO" if resultados and all(r.get("status") != "PENDENTE" for r in resultados) else "PENDENTE",
+        "resultados": resultados,
+        "fonte_lotes": LOTES_URL,
+        "fonte_restricoes": RESTRICOES_URL,
+        "metodo": "interseção espacial do polígono do lote com a camada oficial de áreas de restrição",
     }
 
 @mcp.tool()
@@ -302,9 +479,11 @@ def calcular_potencial_preliminar(area_lote_m2: float, ca: float, taxa_ocupacao_
         ),
         "potencial_teorico_preliminar_m2": round(potencial, 2),
         "potencial_adicional_teorico_m2": round(max(0.0, potencial - area_existente_m2), 2),
+        "classificacao": "POTENCIAL TEÓRICO PRELIMINAR, NÃO POTENCIAL EDIFICÁVEL DEFINITIVO",
         "aviso": (
-            "Não representa potencial edificável definitivo: recuos, afastamentos, "
-            "altura, vagas, restrições espaciais e demais regras ainda devem ser verificados."
+            "Não representa potencial edificável definitivo. O cálculo não incorpora "
+            "recuos/afastamentos, envelope construtivo, altura legal confirmada, "
+            "restrições espaciais e demais regras específicas."
         ),
     }
 
