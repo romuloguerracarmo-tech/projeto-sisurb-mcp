@@ -279,7 +279,7 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
         )
 
     resultado["pendencias"].append(
-        "A legislação municipal possui alterações posteriores; a análise definitiva "
+        "A Lei Complementar nº 243/2024 alterou o Anexo 8 em matéria específica de uso institucional/hospitais; essa alteração não deve ser extrapolada para M3A residencial sem verificar o texto vigente. ""A legislação municipal possui alterações posteriores; a análise definitiva "
         "deve considerar a legislação vigente e eventuais leis específicas do trecho/via."
     )
     return resultado
@@ -307,6 +307,109 @@ def calcular_potencial_preliminar(area_lote_m2: float, ca: float, taxa_ocupacao_
             "altura, vagas, restrições espaciais e demais regras ainda devem ser verificados."
         ),
     }
+
+
+@mcp.tool()
+def avaliar_modelo_ocupacao_jf(
+    zona: str,
+    modelo: str,
+    uso: str = "não informado",
+    area_lote_m2: float = 0.0,
+    numero_apartamentos: int = 0,
+    areas_apartamentos_m2: list[float] | None = None,
+    vagas: int = 0,
+) -> dict:
+    """Avalia o modelo de ocupação sem assumir automaticamente coeficientes condicionados."""
+    z = norm(zona)
+    m = norm(modelo).replace(" ", "")
+    uso_n = norm(uso)
+
+    if m != "M3A":
+        return {
+            "ok": False,
+            "modelo": modelo,
+            "mensagem": (
+                "A avaliação automatizada desta versão está parametrizada "
+                "especificamente para M3A. Não extrapolar regras para outros modelos."
+            ),
+        }
+
+    base = {
+        "ok": True,
+        "zona": zona,
+        "modelo": "M3A",
+        "area_lote_m2": area_lote_m2,
+        "regras_confirmadas": {
+            "lote_minimo_m2": 360.0,
+            "testada_minima_m": 10.0,
+            "ca_base": 2.2,
+            "ca_condicionado": 2.8,
+            "taxa_ocupacao": "1º ao 3º pavimento = 100% até 9,20 m; demais pavimentos = 65%",
+            "afastamento_frontal": "consultar condição aplicável no Anexo 8 e descontar o afastamento frontal da área de TO de 100%",
+        },
+        "fonte": LEGISLACAO_URL,
+        "condicao_ca_2_8": {
+            "status": "PENDENTE",
+            "regra": (
+                "Para coeficientes marcados com *, devem ser atendidas as relações "
+                "mínimas de vaga/apartamento previstas no Anexo 8."
+            ),
+            "faixas": [
+                {"area_apartamento": "< 55 m²", "vagas_por_apartamento": 0.5},
+                {"area_apartamento": "55 a < 100 m²", "vagas_por_apartamento": 1},
+                {"area_apartamento": "100 a < 160 m²", "vagas_por_apartamento": 2},
+                {"area_apartamento": ">= 160 m²", "vagas_por_apartamento": 3},
+            ],
+        },
+        "conclusao": "CA aplicável ainda não determinado sem dados suficientes sobre unidades/vagas.",
+    }
+
+    if not area_lote_m2 or area_lote_m2 <= 0:
+        base["pendencias"] = ["Área do lote não informada."]
+        return base
+
+    if areas_apartamentos_m2:
+        areas = [float(x) for x in areas_apartamentos_m2 if float(x) > 0]
+    elif numero_apartamentos > 0:
+        areas = []
+        base["pendencias"] = [
+            "Número de apartamentos informado, mas áreas individuais não informadas; "
+            "não é seguro classificar a faixa de vagas."
+        ]
+    else:
+        areas = []
+
+    if areas:
+        vagas_necessarias = 0.0
+        for a in areas:
+            if a < 55:
+                vagas_necessarias += 0.5
+            elif a < 100:
+                vagas_necessarias += 1
+            elif a < 160:
+                vagas_necessarias += 2
+            else:
+                vagas_necessarias += 3
+        base["condicao_ca_2_8"]["vagas_necessarias"] = vagas_necessarias
+        base["condicao_ca_2_8"]["vagas_informadas"] = vagas
+        if vagas >= vagas_necessarias:
+            base["condicao_ca_2_8"]["status"] = "ATENDIDA"
+            base["ca_aplicavel_preliminar"] = 2.8
+            base["conclusao"] = "CA 2,8 pode ser adotado preliminarmente, sujeito às demais regras legais."
+        else:
+            base["condicao_ca_2_8"]["status"] = "NÃO ATENDIDA"
+            base["ca_aplicavel_preliminar"] = 2.2
+            base["conclusao"] = "CA 2,2 deve ser usado preliminarmente porque a condição de vagas para 2,8 não foi atendida."
+    else:
+        base["ca_aplicavel_preliminar"] = 2.2
+        base["conclusao"] = (
+            "Sem dados suficientes para comprovar o CA condicionado de 2,8. "
+            "Use CA 2,2 como cenário-base e trate 2,8 como cenário condicionado."
+        )
+
+    base["potencial_ca_base_m2"] = round(area_lote_m2 * 2.2, 2)
+    base["potencial_ca_condicionado_m2"] = round(area_lote_m2 * 2.8, 2)
+    return base
 
 if __name__ == "__main__":
     mcp.run(
