@@ -1,17 +1,7 @@
-# SISURB MCP Juiz de Fora — v5
+# SISURB MCP Juiz de Fora — v6
 
-Inclui:
-- busca de lote SISURB;
-- consulta de zoneamento;
-- consulta legislativa;
-- cálculo preliminar;
-- avaliação do M3A sem assumir automaticamente CA 2,8.
+Correção importante: a Lei Complementar nº 54/2016, art. 2º, cancelou a última observação relativa a vagas que figurava no Anexo 8. Esta versão não condiciona automaticamente o CA 2,8 do M3A à antiga tabela de vagas. Vagas continuam sendo dimensionadas separadamente.
 
-Regra de segurança:
-- M3A = CA base 2,2;
-- CA 2,8 é condicionado às relações mínimas de vagas/apartamento do Anexo 8;
-- sem dados suficientes de apartamentos/vagas, 2,8 permanece como cenário condicionado;
-- não inventa afastamentos ausentes.
+Ferramentas: buscar_lote_sisurb; consultar_zoneamento_sisurb; consultar_legislacao_jf; consultar_regra_urbanistica_jf; avaliar_modelo_ocupacao_jf; calcular_potencial_preliminar.
 
-Endpoint:
-https://SEU-SERVICO.onrender.com/mcp
+Recuos/afastamentos e restrições espaciais continuam pendentes até confirmação específica.

@@ -309,107 +309,63 @@ def calcular_potencial_preliminar(area_lote_m2: float, ca: float, taxa_ocupacao_
     }
 
 
+
 @mcp.tool()
-def avaliar_modelo_ocupacao_jf(
-    zona: str,
-    modelo: str,
-    uso: str = "não informado",
-    area_lote_m2: float = 0.0,
-    numero_apartamentos: int = 0,
-    areas_apartamentos_m2: list[float] | None = None,
-    vagas: int = 0,
-) -> dict:
-    """Avalia o modelo de ocupação sem assumir automaticamente coeficientes condicionados."""
+def consultar_regra_urbanistica_jf(zona: str, modelo: str, uso: str = "não informado") -> dict:
+    """Consulta regras estruturadas para zona/modelo sem inventar parâmetros."""
     z = norm(zona)
     m = norm(modelo).replace(" ", "")
-    uso_n = norm(uso)
-
-    if m != "M3A":
-        return {
-            "ok": False,
-            "modelo": modelo,
-            "mensagem": (
-                "A avaliação automatizada desta versão está parametrizada "
-                "especificamente para M3A. Não extrapolar regras para outros modelos."
-            ),
-        }
-
-    base = {
-        "ok": True,
-        "zona": zona,
-        "modelo": "M3A",
-        "area_lote_m2": area_lote_m2,
-        "regras_confirmadas": {
-            "lote_minimo_m2": 360.0,
-            "testada_minima_m": 10.0,
-            "ca_base": 2.2,
-            "ca_condicionado": 2.8,
-            "taxa_ocupacao": "1º ao 3º pavimento = 100% até 9,20 m; demais pavimentos = 65%",
-            "afastamento_frontal": "consultar condição aplicável no Anexo 8 e descontar o afastamento frontal da área de TO de 100%",
-        },
-        "fonte": LEGISLACAO_URL,
-        "condicao_ca_2_8": {
-            "status": "PENDENTE",
-            "regra": (
-                "Para coeficientes marcados com *, devem ser atendidas as relações "
-                "mínimas de vaga/apartamento previstas no Anexo 8."
-            ),
-            "faixas": [
-                {"area_apartamento": "< 55 m²", "vagas_por_apartamento": 0.5},
-                {"area_apartamento": "55 a < 100 m²", "vagas_por_apartamento": 1},
-                {"area_apartamento": "100 a < 160 m²", "vagas_por_apartamento": 2},
-                {"area_apartamento": ">= 160 m²", "vagas_por_apartamento": 3},
-            ],
-        },
-        "conclusao": "CA aplicável ainda não determinado sem dados suficientes sobre unidades/vagas.",
+    result = {
+        "ok": False, "zona": zona, "modelo": modelo, "uso_informado": uso,
+        "status": "PENDENTE",
+        "fontes": [
+            "https://www.camarajf.mg.gov.br/sal/norma.php?njc=&njn=06910&njt=LEI",
+            "https://www.camarajf.mg.gov.br/sal/norma.php?njc=&njn=054&njt=LEICO&t=0",
+            "https://www.camarajf.mg.gov.br/sal/norma.php?njc=&njn=06909&njt=LEI",
+        ],
+        "regras": [], "observacoes": [], "pendencias": []
     }
-
-    if not area_lote_m2 or area_lote_m2 <= 0:
-        base["pendencias"] = ["Área do lote não informada."]
-        return base
-
-    if areas_apartamentos_m2:
-        areas = [float(x) for x in areas_apartamentos_m2 if float(x) > 0]
-    elif numero_apartamentos > 0:
-        areas = []
-        base["pendencias"] = [
-            "Número de apartamentos informado, mas áreas individuais não informadas; "
-            "não é seguro classificar a faixa de vagas."
+    if "ZONA RESIDENCIAL 2" in z and "CORREDOR" in z and m == "M3A":
+        result["ok"] = True
+        result["status"] = "PARCIALMENTE CONFIRMADO"
+        result["regras"] = [
+            {"parametro":"modelo","valor":"M3A","status":"CONFIRMADO"},
+            {"parametro":"ca_maximo_do_modelo","valor":2.8,"status":"CONFIRMADO",
+             "fonte":"Anexo 8 da Lei 6.910/1986; referências oficiais da Câmara; SISURB"},
+            {"parametro":"lote_minimo_m2","valor":360.0,"status":"CONFIRMADO"},
+            {"parametro":"testada_minima_m","valor":10.0,"status":"CONFIRMADO"},
         ]
-    else:
-        areas = []
+        result["observacoes"] = [
+            "A LC 54/2016, art. 2º, cancelou a última observação relativa a vagas que figurava no Anexo 8.",
+            "Esta versão NÃO condiciona automaticamente o CA 2,8 do M3A à antiga tabela de vagas.",
+            "Vagas continuam sendo dimensionadas separadamente pela LC 54/2016.",
+            "Para uso misto, considerar os arts. 32 e 33 da Lei 6.910/1986."
+        ]
+        result["pendencias"] = [
+            "Confirmar recuos/afastamentos específicos do M3A no Anexo 8 vigente.",
+            "Confirmar altura/gabarito como regra legal, sem confundir com campo cadastral.",
+            "Consultar espacialmente a camada de restrições do SISURB."
+        ]
+    return result
 
-    if areas:
-        vagas_necessarias = 0.0
-        for a in areas:
-            if a < 55:
-                vagas_necessarias += 0.5
-            elif a < 100:
-                vagas_necessarias += 1
-            elif a < 160:
-                vagas_necessarias += 2
-            else:
-                vagas_necessarias += 3
-        base["condicao_ca_2_8"]["vagas_necessarias"] = vagas_necessarias
-        base["condicao_ca_2_8"]["vagas_informadas"] = vagas
-        if vagas >= vagas_necessarias:
-            base["condicao_ca_2_8"]["status"] = "ATENDIDA"
-            base["ca_aplicavel_preliminar"] = 2.8
-            base["conclusao"] = "CA 2,8 pode ser adotado preliminarmente, sujeito às demais regras legais."
-        else:
-            base["condicao_ca_2_8"]["status"] = "NÃO ATENDIDA"
-            base["ca_aplicavel_preliminar"] = 2.2
-            base["conclusao"] = "CA 2,2 deve ser usado preliminarmente porque a condição de vagas para 2,8 não foi atendida."
-    else:
-        base["ca_aplicavel_preliminar"] = 2.2
-        base["conclusao"] = (
-            "Sem dados suficientes para comprovar o CA condicionado de 2,8. "
-            "Use CA 2,2 como cenário-base e trate 2,8 como cenário condicionado."
-        )
-
-    base["potencial_ca_base_m2"] = round(area_lote_m2 * 2.2, 2)
-    base["potencial_ca_condicionado_m2"] = round(area_lote_m2 * 2.8, 2)
-    return base
+@mcp.tool()
+def avaliar_modelo_ocupacao_jf(zona: str, modelo: str, uso: str = "não informado", area_lote_m2: float = 0.0) -> dict:
+    """Avalia M3A sem reduzir automaticamente o CA 2,8 por regra antiga de vagas."""
+    regra = consultar_regra_urbanistica_jf(zona, modelo, uso)
+    if not regra.get("ok"):
+        return regra
+    out = {
+        "ok": True, "status": regra["status"], "zona": zona, "modelo": modelo,
+        "uso": uso, "ca_aplicavel_preliminar": 2.8,
+        "ca_status": "CONFIRMADO COMO LIMITE DO MODELO, SUJEITO À APLICABILIDADE DO USO",
+        "fontes": regra["fontes"], "observacoes": regra["observacoes"],
+        "pendencias": regra["pendencias"],
+        "vagas": {"status":"CALCULAR SEPARADAMENTE", "fonte":"Lei Complementar nº 54/2016",
+                  "observacao":"Não reduzir automaticamente o CA 2,8 por esta regra de vagas."}
+    }
+    if area_lote_m2 > 0:
+        out["potencial_pelo_ca_m2"] = round(area_lote_m2 * 2.8, 2)
+    return out
 
 if __name__ == "__main__":
     mcp.run(
