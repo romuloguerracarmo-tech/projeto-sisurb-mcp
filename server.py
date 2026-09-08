@@ -128,7 +128,7 @@ def norm(s: str) -> str:
     return s
 
 def arcgis_query(url, where, out_fields, return_geometry=False, geometry=None,
-                 geometry_type=None, spatial_rel=None, out_sr=None, timeout=45):
+                 geometry_type=None, spatial_rel=None, in_sr=None, out_sr=None, timeout=45):
     params = {
         "where": where,
         "outFields": out_fields,
@@ -141,6 +141,8 @@ def arcgis_query(url, where, out_fields, return_geometry=False, geometry=None,
         params["geometryType"] = geometry_type
     if spatial_rel:
         params["spatialRel"] = spatial_rel
+    if in_sr:
+        params["inSR"] = str(in_sr)
     if out_sr:
         params["outSR"] = str(out_sr)
     r = requests.get(url, params=params, timeout=timeout)
@@ -157,18 +159,10 @@ def buscar_lote_sisurb(endereco: str) -> dict:
         return {"ok": False, "erro": "Informe um endereço."}
 
     q = norm(endereco).replace("'", "''")
-    fields = (
-        "OBJECTID,geocodigo,id_lote,id_lote_pjf,id_lote_2,jftech_codigo_lote,"
-        "endereco,area_construida_est_m2,area_maior_edificacao,"
-        "area_min_lote_perm_m2,area_projecao_edif_est_m2,area_remanescente_est_m2,"
-        "coefic_aprov_pratic_est,coefic_aproveitamento_perm_gera,"
-        "gabarito,modelo_parcelamento_geral,modelo_ocupacao_geral,"
-        "qtde_inscricoes,qtde_unid_edificadas,qtde_pavimentos,"
-        "taxa_ocupacao_praticada_est,taxa_ocupacao_perm_geral,"
-        "taxa_permeab_praticada_est,taxa_impermeabilidade_perm_gera,"
-        "tipo_lote,tipo_uso,utilizacao,unidades_planejamento,zoneamento,"
-        "fonte,ano,area_geometria"
-    )
+    # Use outFields=* here. Earlier versions listed fields that are not present
+    # in every SISURB publication (notably modelo_ocupacao_geral), which caused
+    # ArcGIS HTTP 400 errors even when the address itself was valid.
+    fields = "*"
 
     queries = []
     # 1) igualdade exata normalizada para evitar consultas LIKE excessivamente amplas.
@@ -217,7 +211,7 @@ def buscar_lote_sisurb(endereco: str) -> dict:
             gd = arcgis_query(
                 LOTES_URL,
                 f"OBJECTID = {int(oid)}",
-                "OBJECTID,geocodigo,id_lote,endereco,area_geometria",
+                "*",
                 return_geometry=True,
                 out_sr=31983,
                 timeout=45,
@@ -271,7 +265,7 @@ def consultar_restricoes_sisurb(geometria_lote: dict) -> dict:
             geometry=geometry,
             geometry_type="esriGeometryPolygon",
             spatial_rel="esriSpatialRelIntersects",
-            out_sr=31983,
+            in_sr=31983, out_sr=31983,
             timeout=45,
         )
     except Exception as exc:
@@ -348,7 +342,7 @@ def consultar_restricoes_por_lote(endereco: str = "", id_lote: str = "", geocodi
                 RESTRICOES_URL, "1=1",
                 "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano,shape.STArea()",
                 geometry=geometry, geometry_type="esriGeometryPolygon",
-                spatial_rel="esriSpatialRelIntersects", out_sr=31983, timeout=45
+                spatial_rel="esriSpatialRelIntersects", in_sr=31983, out_sr=31983, timeout=45
             )
             restricoes = [x.get("attributes", {}) for x in rd.get("features", [])]
             resultados.append({
@@ -368,6 +362,111 @@ def consultar_restricoes_por_lote(endereco: str = "", id_lote: str = "", geocodi
         "fonte_restricoes": RESTRICOES_URL,
         "metodo": "interseção espacial do polígono do lote com a camada oficial de áreas de restrição",
     }
+
+@mcp.tool()
+def consultar_zoneamento_por_lote(geometria_lote: dict) -> dict:
+    """Identifica o(s) polígono(s) de zoneamento que intersectam a geometria do lote."""
+    if not geometria_lote:
+        return {"ok": False, "status": "PENDENTE", "erro": "Geometria do lote não informada."}
+    geometry = geometria_lote.get("geometry", geometria_lote) if isinstance(geometria_lote, dict) else geometria_lote
+    if not isinstance(geometry, dict) or not geometry.get("rings"):
+        return {"ok": False, "status": "PENDENTE", "erro": "Geometria de lote inválida ou sem anéis poligonais."}
+    fields = (
+        "OBJECTID,nome,sigla,coef_aprov_perm_geral,taxa_ocup_perm_geral,"
+        "taxa_impermeab_perm_geral,modelo_parcelamento_geral,area_minima_lote,"
+        "coef_aprov_perm_res,coef_aprov_perm_com,coef_aprov_perm_inst,coef_aprov_perm_ind,"
+        "modelo_ocupacao_geral,observacao,fonte,ano,geocodigo,legislacao_incidente,"
+        "geocodigo_unificados,comentario_dado,tx_ocupacao_art36,area_geometria"
+    )
+    try:
+        data = arcgis_query(
+            ZONEAMENTO_URL, "1=1", fields, return_geometry=False,
+            geometry=geometry, geometry_type="esriGeometryPolygon",
+            spatial_rel="esriSpatialRelIntersects", in_sr=31983, out_sr=4674, timeout=45
+        )
+    except Exception as exc:
+        return {
+            "ok": False, "status": "PENDENTE",
+            "erro": "Falha na consulta espacial do zoneamento.",
+            "detalhe_tecnico": str(exc), "fonte": ZONEAMENTO_URL
+        }
+    feats = data.get("features", [])
+    zonas = [f.get("attributes", {}) for f in feats]
+    # Remove duplicatas exatas de OBJECTID, preservando todos os polígonos distintos.
+    seen=set(); unique=[]
+    for z in zonas:
+        oid=z.get("OBJECTID")
+        key=oid if oid is not None else repr(sorted(z.items()))
+        if key not in seen:
+            seen.add(key); unique.append(z)
+    if not unique:
+        return {
+            "ok": True, "status": "NENHUMA ZONA INTERSECTADA", "quantidade": 0,
+            "zonas": [], "fonte": ZONEAMENTO_URL,
+            "metodo": "interseção espacial do polígono do lote com a camada oficial de zoneamento"
+        }
+    return {
+        "ok": True, "status": "ZONEAMENTO IDENTIFICADO",
+        "quantidade": len(unique), "zonas": unique, "fonte": ZONEAMENTO_URL,
+        "metodo": "interseção espacial do polígono do lote com a camada oficial de zoneamento",
+        "observacao": (
+            "Se houver mais de um polígono, não escolher silenciosamente. Informar a sobreposição "
+            "e confirmar qual feição efetivamente cobre a área do lote."
+        )
+    }
+
+
+@mcp.tool()
+def analisar_lote_sisurb(endereco: str = "", id_lote: str = "", geocodigo: str = "") -> dict:
+    """Fluxo integrado: localiza lote, obtém zoneamento espacial e verifica restrições."""
+    busca = buscar_lote_sisurb(endereco) if endereco.strip() else consultar_restricoes_por_lote(id_lote=id_lote, geocodigo=geocodigo)
+    if not busca.get("ok"):
+        # Fallback robusto: a ferramenta espacial de restrições já sabe localizar o lote.
+        if endereco.strip():
+            busca2 = consultar_restricoes_por_lote(endereco=endereco)
+            if not busca2.get("ok"):
+                return {"ok": False, "status": "PENDENTE", "erro": "Não foi possível localizar o lote.", "buscar_lote": busca, "fallback": busca2}
+            itens = busca2.get("resultados", [])
+            if not itens:
+                return {"ok": False, "status": "PENDENTE", "erro": "Lote não encontrado.", "fallback": busca2}
+            lotes = itens
+            geometrias = []
+            for item in itens:
+                lote=item.get("lote", {})
+                if lote.get("OBJECTID") is not None:
+                    # A geometria não é exposta pelo fallback antigo; recupere por OBJECTID.
+                    try:
+                        gd=arcgis_query(LOTES_URL, f"OBJECTID = {int(lote['OBJECTID'])}", "*", return_geometry=True, out_sr=31983, timeout=45)
+                        if gd.get("features") and gd["features"][0].get("geometry"):
+                            geometrias.append({"lote": lote, "geometry": gd["features"][0]["geometry"]})
+                    except Exception:
+                        pass
+            busca={"ok": bool(geometrias), "resultados": [x.get("lote",{}) for x in geometrias], "geometrias": geometrias, "fonte": LOTES_URL, "fallback_usado": True}
+        else:
+            return {"ok": False, "status": "PENDENTE", "erro": "Lote não localizado.", "buscar_lote": busca}
+    geometrias=busca.get("geometrias", [])
+    if not geometrias:
+        # consultar_restricoes_por_lote pode devolver o lote mas não a geometria; tente pelos IDs.
+        for lote in busca.get("resultados", []):
+            oid=lote.get("OBJECTID")
+            if oid is None: continue
+            try:
+                gd=arcgis_query(LOTES_URL, f"OBJECTID = {int(oid)}", "*", return_geometry=True, out_sr=31983, timeout=45)
+                if gd.get("features") and gd["features"][0].get("geometry"):
+                    geometrias.append({"OBJECTID":oid, "geocodigo":lote.get("geocodigo"), "id_lote":lote.get("id_lote"), "geometry":gd["features"][0]["geometry"]})
+            except Exception:
+                pass
+    saida=[]
+    for g in geometrias[:10]:
+        z=consultar_zoneamento_por_lote(g.get("geometry",{}))
+        r=consultar_restricoes_sisurb(g.get("geometry",{}))
+        saida.append({"lote":g, "zoneamento":z, "restricoes":r})
+    return {
+        "ok": bool(saida), "status": "CONCLUÍDO" if saida else "PENDENTE",
+        "lotes": saida, "buscar_lote": busca,
+        "observacao": "Fluxo integrado espacial: lote → zoneamento → restrições. Nenhum parâmetro legal é inferido apenas pelo nome da zona."
+    }
+
 
 @mcp.tool()
 def consultar_zoneamento_sisurb(nome_zona: str) -> dict:
@@ -430,9 +529,9 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
             if m == "M3A":
                 resultado["modelo"] = MODEL_RULES["M3A"]
                 resultado["regras_confirmadas"].append(
-                    "Para M3A, o Anexo 8 registra CA máximo de 2,2, "
-                    "com possibilidade de 2,8(*) quando atendidas as condições "
-                    "associadas aos coeficientes marcados com asterisco."
+                    "Para M3A, a matriz desta ferramenta adota CA 2,8 como parâmetro aplicável, "
+                    "sem condicionar automaticamente o CA à antiga observação de vagas do Anexo 8; "
+                    "a LC 54/2016, art. 2º, cancelou a última observação de vagas do Anexo 8."
                 )
                 resultado["pendencias"].append(
                     "Para fechar o envelope do M3A, conferir diretamente o Anexo 8 "
@@ -456,8 +555,10 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
         )
 
     resultado["pendencias"].append(
-        "A Lei Complementar nº 243/2024 alterou o Anexo 8 em matéria específica de uso institucional/hospitais; essa alteração não deve ser extrapolada para M3A residencial sem verificar o texto vigente. ""A legislação municipal possui alterações posteriores; a análise definitiva "
-        "deve considerar a legislação vigente e eventuais leis específicas do trecho/via."
+        "A Lei Complementar nº 243/2024 alterou o Anexo 8 em matéria específica de uso institucional/hospitais; "
+        "essa alteração não deve ser extrapolada para M3A residencial sem verificar o texto vigente. "
+        "A legislação municipal possui alterações posteriores; a análise definitiva deve considerar a legislação vigente "
+        "e eventuais leis específicas do trecho/via."
     )
     return resultado
 
