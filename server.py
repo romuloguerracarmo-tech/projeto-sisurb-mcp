@@ -121,6 +121,31 @@ MODEL_RULES = {
     },
 }
 
+
+# Parâmetros de envelope: somente valores com suporte suficiente para uso como
+# referência são armazenados aqui. Quando a legislação vigente não foi confirmada
+# diretamente pelo texto do Anexo 8, o campo permanece PENDENTE e não entra em
+# cálculo de potencial edificável.
+ENVELOPE_RULES = {
+    "M3A": {
+        "status": "PARCIALMENTE_CONFIRMADO",
+        "to_primeiros_pavimentos_pct": 100.0,
+        "to_primeiros_pavimentos_ate_altura_m": 9.20,
+        "to_demais_pavimentos_pct": 65.0,
+        "recuo_frontal_primeiros_pavimentos_m": None,
+        "recuo_frontal_demais_pavimentos_m": None,
+        "afastamento_lateral_fundos_primeiros_pavimentos_m": None,
+        "afastamento_lateral_fundos_demais_pavimentos_m": None,
+        "pavimentos_primeira_faixa": 3,
+        "observacao": (
+            "A estrutura de TO é tratada como referência preliminar para M3A; "
+            "recuos/afastamentos e a redação vigente do Anexo 8 não estão "
+            "suficientemente confirmados nesta ferramenta para cálculo definitivo."
+        ),
+        "fonte_contextual": "Lei 6.910/1986, Anexo 8; verificar texto vigente",
+    }
+}
+
 def norm(s: str) -> str:
     s = unicodedata.normalize("NFKD", s or "")
     s = "".join(c for c in s if not unicodedata.combining(c))
@@ -561,6 +586,73 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
         "e eventuais leis específicas do trecho/via."
     )
     return resultado
+
+
+@mcp.tool()
+def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
+                               profundidade_m: float = 0.0, pavimentos: int = 3) -> dict:
+    """Retorna o estado dos parâmetros de envelope do M3A sem inventar recuos.
+
+    A ferramenta separa parâmetros confirmados, referências preliminares e
+    parâmetros ainda pendentes. Não produz potencial edificável definitivo.
+    """
+    regra = ENVELOPE_RULES["M3A"].copy()
+    resultado = {
+        "ok": True,
+        "modelo": "M3A",
+        "status": regra.pop("status"),
+        "parametros": regra,
+        "entradas": {
+            "area_lote_m2": area_lote_m2 or None,
+            "testada_m": testada_m or None,
+            "profundidade_m": profundidade_m or None,
+            "pavimentos": pavimentos or None,
+        },
+        "recuos": {
+            "frontal": {"valor_m": None, "status": "PENDENTE"},
+            "lateral": {"valor_m": None, "status": "PENDENTE"},
+            "fundos": {"valor_m": None, "status": "PENDENTE"},
+        },
+        "altura": {"status": "PENDENTE", "observacao": "Não confundir gabarito cadastral com regra legal."},
+        "envelope_calculavel": False,
+        "motivo": "Sem recuos/afastamentos legalmente confirmados não é possível calcular o envelope real.",
+        "fonte": LEGISLACAO_URL,
+    }
+    if area_lote_m2 > 0:
+        resultado["implantacao_teorica_100pct_m2"] = round(area_lote_m2, 2)
+        resultado["implantacao_65pct_m2"] = round(area_lote_m2 * 0.65, 2)
+        resultado["status_calculo_to"] = "CALCULADO, não equivale ao envelope construtivo"
+    return resultado
+
+
+@mcp.tool()
+def comparar_limitantes_sisurb(area_lote_m2: float, ca: float,
+                                taxa_ocupacao_pct: float = 0.0,
+                                pavimentos_confirmados: int = 0,
+                                area_existente_m2: float = 0.0,
+                                restricao_impacto_confirmado: bool = False) -> dict:
+    """Compara limitantes independentes; não multiplica CA × TO × pavimentos."""
+    ca_area = area_lote_m2 * ca if ca > 0 else None
+    to_area = area_lote_m2 * taxa_ocupacao_pct / 100.0 if taxa_ocupacao_pct > 0 else None
+    pav_area = to_area * pavimentos_confirmados if (to_area is not None and pavimentos_confirmados > 0) else None
+    candidatos = [("CA", ca_area), ("TO × pavimentos", pav_area)]
+    candidatos_validos = [(n,v) for n,v in candidatos if v is not None]
+    menor = min(candidatos_validos, key=lambda x:x[1]) if candidatos_validos else None
+    return {
+        "ok": True,
+        "area_lote_m2": area_lote_m2,
+        "limites_independentes": {
+            "ca_m2": round(ca_area,2) if ca_area is not None else None,
+            "implantacao_to_m2": round(to_area,2) if to_area is not None else None,
+            "to_x_pavimentos_m2": round(pav_area,2) if pav_area is not None else None,
+        },
+        "menor_limite_entre_itens_confirmados": menor[0] if menor else "PENDENTE",
+        "valor_menor_m2": round(menor[1],2) if menor else None,
+        "restricao_espacial": "IDENTIFICADA — efeito normativo PENDENTE" if restricao_impacto_confirmado else "não informada",
+        "potencial_edificavel_definitivo": "PENDENTE",
+        "area_adicional_teorica": round(max(0, menor[1]-area_existente_m2),2) if menor else None,
+        "aviso": "Não multiplicar CA, TO e pavimentos. O envelope e as restrições devem ser comparados separadamente antes da conclusão.",
+    }
 
 @mcp.tool()
 def calcular_potencial_preliminar(area_lote_m2: float, ca: float, taxa_ocupacao_pct: float, pavimentos: int, area_existente_m2: float = 0.0) -> dict:
