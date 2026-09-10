@@ -1,41 +1,27 @@
-# SISURB Juiz de Fora — V13
+# SISURB Juiz de Fora — V14
 
-MCP para análise preliminar de viabilidade urbanística a partir das camadas oficiais do SISURB/PJF.
+Versão V14 do MCP para consulta e análise preliminar de viabilidade urbanística.
 
-## Correções da V13
+## Correções principais
 
-- `gabarito` do cadastro SISURB é normalizado como `gabarito_cadastral_sisurb`.
-- Nunca converter automaticamente `gabarito_cadastral_sisurb` em número de pavimentos.
-- `pavimentos_legais_confirmados` permanece nulo até confirmação normativa externa.
-- Não calcular TO × pavimentos nem declarar fator limitante global enquanto faltarem pavimentos legais, recuos/envelope ou efeito normativo das restrições.
-- A consulta de restrições usa estratégia em duas etapas: primeiro atributos das feições intersectantes; depois recupera apenas as geometrias dessas feições. Isso reduz timeouts do SISURB.
-- Quando as geometrias das restrições estão disponíveis, calcula área total intersectada, percentual do lote e área não atingida, sem dupla contagem de sobreposições.
-- Se o servidor da Prefeitura estiver indisponível, o resultado fica PENDENTE e não inventa a restrição.
-- O MCP sinaliza explicitamente que o relatório final não deve conter SVG, código, markup ou duplicações.
+- Atualiza a regra do M3A para a referência do Anexo 8 oficial consultada:
+  - 100% no 1º e 2º pavimentos até 8,90 m;
+  - 60% nos demais pavimentos.
+- Registra CA base do M3A = 2,2 e CA 2,8 como **condicionado/marcado com asterisco**, sem tratá-lo como CA básico irrestrito.
+- Registra recuo frontal de 0 m no 2º pavimento e 2,0 m nos demais, conforme a leitura consultada do Anexo 8.
+- Mantém o gabarito cadastral SISURB separado do número de pavimentos legais; nunca usa `gabarito=3` para multiplicar área.
+- Mantém o fator limitante global como PENDENTE quando faltarem condições necessárias.
+- Mantém a consulta espacial de restrições como etapa independente, sem inventar resultado em caso de erro do serviço.
+- Proíbe geração de SVG, HTML, código ou relatórios duplicados na saída interpretável do MCP.
 
-## Fontes oficiais principais
+## Fontes oficiais
 
-- Lotes urbanísticos: https://sisurb.pjf.mg.gov.br/server/rest/services/uso_cad_lotes/MapServer/158/query
-- Zoneamento: https://sisurb.pjf.mg.gov.br/server/rest/services/uso_zon_zoneamento_urbano_pjf/MapServer/167/query
-- Áreas de restrição: https://sisurb.pjf.mg.gov.br/server/rest/services/SISURB_peus/anl_areas_restricao_P6/MapServer/0/query
 - Lei 6.910/1986: https://www.camarajf.mg.gov.br/sal/norma.php?njc=&njn=06910&njt=LEI
+- Anexo 8: https://www.camarajf.mg.gov.br/sal/anexo.php?cod=55&t=nj
+- LC 54/2016: https://www.camarajf.mg.gov.br/sal/norma.php?njc=&njn=054&njt=LEICO&t=0
+- SISURB zoneamento: https://sisurb.pjf.mg.gov.br/server/rest/services/uso_zon_zoneamento_urbano_pjf/MapServer/167
+- SISURB restrições: https://sisurb.pjf.mg.gov.br/server/rest/services/SISURB_peus/anl_areas_restricao_P6/MapServer/0
 
-## Teste recomendado
+## Observação
 
-Após deploy, no Claude digitar apenas:
-
-`Rua São Mateus, 490`
-
-Esperado: gabarito cadastral separado de pavimentos legais; potencial por pavimentos PENDENTE; fator limitante global PENDENTE; e, se o SISURB responder, área/percentual de restrição calculados.
-
-
-## V13 — lógica Anexo 6/8 e uso
-- Não interpreta `gabarito` cadastral do SISURB como número de pavimentos.
-- Adiciona `classificar_uso_zr2_corredor` para separar uso residencial, comercial/serviço local/setorial e usos que exigem enquadramento adicional.
-- Não usa o rótulo cadastral "loja" para definir automaticamente o uso futuro.
-- Para ZR2-Corredor residencial unifamiliar, reconhece até M3A e CA 2,8 quando aplicável.
-- Para comércio/serviço local, reconhece até M1A; para setorial, até M2A, sempre condicionando a classificação da atividade ao Anexo 7.
-- Envelope M3A permanece conservador: não calcula área geométrica definitiva sem testada/profundidade e confirmação inequívoca do recuo frontal.
-- A regra lateral/fundos do M3A é exposta separadamente e não é convertida automaticamente em área edificável.
-- `fator_limitante_global` só pode ser concluído quando os principais limites estiverem efetivamente confirmados.
-- Relatório final não deve produzir SVG, HTML, código ou duplicações.
+A V14 não declara potencial construtivo definitivo. O CA 2,8 é tratado como condicionado enquanto a condição associada ao asterisco não for explicitamente resolvida para o caso concreto. A análise geométrica do envelope depende de testada/profundidade e da definição completa das divisas/regras aplicáveis.

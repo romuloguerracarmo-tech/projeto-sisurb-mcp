@@ -70,9 +70,9 @@ MODEL_RULES = {
     "M3A": {
         "area_minima_m2": 360.0, "testada_minima_m": 10.0,
         "ca_max": 2.2, "ca_max_com_vagas": 2.8,
-        "taxa_ocupacao": "1º ao 3º pavimento = 100% até 9,20 m; demais = 65% (conforme consolidação textual consultada)",
-        "recuo_frontal_m": None,
-        "afastamento_lateral_fundos": "1º ao 3º pavimento = 0; demais = uma divisa = 0 e demais = 1,5 m (parâmetro a confirmar para o texto vigente aplicável)"
+        "taxa_ocupacao": "1º e 2º pavimento = 100% até 8,90 m; demais pavimentos = 60%",
+        "recuo_frontal_m": "2º pavimento = 0 m; demais pavimentos = 2,0 m (conforme Anexo 8 oficial consultado)",
+        "afastamento_lateral_fundos": "1ª faixa = 0 m; demais pavimentos: uma divisa = 0 m; demais = 1,5 m (conforme leitura disponível; confirmar coluna completa para aplicação geométrica)"
     },
     "M4": {
         "area_minima_m2": 360.0, "testada_minima_m": 10.0,
@@ -133,21 +133,24 @@ ANEXO8_OFICIAL_URL = "https://www.camarajf.mg.gov.br/sal/anexo.php?cod=55&t=nj"
 ENVELOPE_RULES = {
     "M3A": {
         "status": "PARCIALMENTE_CONFIRMADO",
+        "ca_base": 2.2,
+        "ca_condicionado": 2.8,
+        "ca_condicionado_marcado_asterisco": True,
         "to_primeiros_pavimentos_pct": 100.0,
-        "to_primeiros_pavimentos_ate_altura_m": 9.20,
-        "to_demais_pavimentos_pct": 65.0,
-        "recuo_frontal_primeiros_pavimentos_m": None,
-        "recuo_frontal_demais_pavimentos_m": None,
+        "to_primeiros_pavimentos_quantidade_pavimentos": 2,
+        "to_primeiros_pavimentos_ate_altura_m": 8.90,
+        "to_demais_pavimentos_pct": 60.0,
+        "recuo_frontal_segundo_pavimento_m": 0.0,
+        "recuo_frontal_demais_pavimentos_m": 2.0,
         "afastamento_lateral_fundos_primeiros_pavimentos_m": 0.0,
         "afastamento_lateral_fundos_demais_pavimentos_m": "uma divisa = 0; demais = 1,5 m",
-        "pavimentos_primeira_faixa": None,
+        "pavimentos_primeira_faixa": 2,
         "observacao": (
-            "A consolidação textual consultada registra para M3A TO de 100% até 9,20 m e 65% nos demais pavimentos. "
-            "A Tabela B do Anexo 6 permite até M3A para uso residencial unifamiliar em ZR2-Corredor. "
-            "O Anexo 8 oficial disponibilizado pela Câmara deve prevalecer em caso de divergência. "
-            "O campo cadastral SISURB gabarito não é usado para inferir pavimentos. "
-            "Os afastamentos laterais/fundos podem ser representados como regra de envelope, mas o recuo frontal do M3A "
-            "não será inventado enquanto não houver leitura inequívoca da coluna correspondente no texto vigente."
+            "Para M3A, a referência oficial do Anexo 8 consultada indica 100% no 1º e 2º pavimentos até 8,90 m e 60% nos demais pavimentos. "
+            "A mesma tabela apresenta CA 2,2 e CA 2,8 marcado com asterisco; o CA 2,8 deve ser tratado como condicionado, não como CA básico irrestrito. "
+            "O recuo frontal indicado é 0 m no 2º pavimento e 2,0 m nos demais. "
+            "O campo cadastral SISURB gabarito não é usado para inferir número total de pavimentos. "
+            "A coluna completa de afastamentos laterais/fundos deve ser conferida antes de cálculo geométrico definitivo."
         ),
         "fonte_oficial_anexo8": ANEXO8_OFICIAL_URL,
         "fonte_legislacao": LEGISLACAO_URL,
@@ -743,13 +746,16 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
             if m == "M3A":
                 resultado["modelo"] = MODEL_RULES["M3A"]
                 resultado["regras_confirmadas"].append(
-                    "Para M3A, a matriz desta ferramenta adota CA 2,8 como parâmetro aplicável, "
-                    "sem condicionar automaticamente o CA à antiga observação de vagas do Anexo 8; "
-                    "a LC 54/2016, art. 2º, cancelou a última observação de vagas do Anexo 8."
+                    "Para M3A, o Anexo 8 oficial consultado apresenta CA base 2,2 e CA 2,8 marcado com asterisco; o 2,8 deve ser tratado como condicionado."
+                )
+                resultado["regras_confirmadas"].append(
+                    "Para M3A, a referência oficial consultada indica TO de 100% no 1º e 2º pavimentos até 8,90 m e 60% nos demais pavimentos."
+                )
+                resultado["regras_confirmadas"].append(
+                    "Recuo frontal: 0 m no 2º pavimento e 2,0 m nos demais, conforme a coluna correspondente do Anexo 8 consultado."
                 )
                 resultado["pendencias"].append(
-                    "O Anexo 8 consultado confirma para M3A: TO de 100% do 1º ao 3º pavimento até 9,20 m e 65% nos demais pavimentos. "
-                    "Os recuos/afastamentos continuam pendentes de interpretação segura para cálculo geométrico."
+                    "Confirmar a condição jurídica específica que habilita o CA 2,8 marcado com asterisco e conferir a coluna completa de afastamentos laterais/fundos antes do cálculo geométrico definitivo."
                 )
             elif m in MODEL_RULES:
                 resultado["modelo"] = MODEL_RULES[m]
@@ -791,13 +797,14 @@ def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
         "entradas": {"area_lote_m2": area_lote_m2 or None, "testada_m": testada_m or None,
                      "profundidade_m": profundidade_m or None, "pavimentos_confirmados": pavimentos_confirmados or None},
         "recuos": {
-            "frontal": {"valor_m": None, "status": "PENDENTE", "motivo": "coluna do M3A não confirmada de forma inequívoca no texto vigente acessível"},
-            "lateral_primeiros_pavimentos": {"valor_m": 0.0, "status": "PARAMETRO_DE_ANEXO8"},
+            "frontal_segundo_pavimento": {"valor_m": 0.0, "status": "CONFIRMADO_ANEXO8"},
+            "frontal_demais_pavimentos": {"valor_m": 2.0, "status": "CONFIRMADO_ANEXO8"},
+            "lateral_primeira_faixa": {"valor_m": 0.0, "status": "PARAMETRO_DE_ANEXO8"},
             "lateral_fundos_demais": {"regra": "uma divisa = 0; demais = 1,5 m", "status": "PARAMETRO_DE_ANEXO8"},
-            "observacao": "Não converter esses parâmetros em área de implantação sem geometria do lote e sem definição das divisas aplicáveis."
+            "observacao": "Os recuos frontais podem ser usados como parâmetros normativos; o cálculo geométrico ainda depende da geometria, testada/profundidade e da definição das divisas."
         },
-        "altura": {"status":"PARCIALMENTE_CONFIRMADO", "altura_faixa_to_100pct_m":9.20,
-                  "observacao":"9,20 m é limite da faixa de TO indicada na consolidação consultada; não é gabarito máximo total."},
+        "altura": {"status":"PARCIALMENTE_CONFIRMADO", "altura_faixa_to_100pct_m":8.90,
+                  "observacao":"8,90 m é o limite da faixa de TO de 100% do 1º e 2º pavimentos indicado no Anexo 8; não é gabarito máximo total."},
         "pavimentos": {"status":"CONFIRMADO_EXTERNAMENTE" if pavimentos_confirmados>0 else "PENDENTE",
                        "valor":pavimentos_confirmados if pavimentos_confirmados>0 else None,
                        "regra":"Nunca usar o campo gabarito do SISURB para inferir pavimentos."},
@@ -807,7 +814,7 @@ def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
     }
     if area_lote_m2 > 0:
         resultado["implantacao_teorica_100pct_m2"] = round(area_lote_m2,2)
-        resultado["implantacao_65pct_m2"] = round(area_lote_m2*0.65,2)
+        resultado["implantacao_60pct_m2"] = round(area_lote_m2*0.60,2)
         resultado["status_calculo_to"] = "CALCULADO — limite abstrato de TO, não envelope"
     return resultado
 
@@ -916,8 +923,10 @@ def consultar_regra_urbanistica_jf(zona: str, modelo: str, uso: str = "não info
         result["status"] = "PARCIALMENTE CONFIRMADO"
         result["regras"] = [
             {"parametro":"modelo","valor":"M3A","status":"CONFIRMADO"},
-            {"parametro":"ca_maximo_do_modelo","valor":2.8,"status":"CONFIRMADO",
-             "fonte":"Anexo 8 da Lei 6.910/1986; referências oficiais da Câmara; SISURB"},
+            {"parametro":"ca_base_do_modelo","valor":2.2,"status":"CONFIRMADO",
+             "fonte":"Anexo 8 oficial consultado"},
+            {"parametro":"ca_condicionado","valor":2.8,"status":"CONDICIONADO",
+             "marcado_asterisco":True,"fonte":"Anexo 8 oficial consultado"},
             {"parametro":"lote_minimo_m2","valor":360.0,"status":"CONFIRMADO"},
             {"parametro":"testada_minima_m","valor":10.0,"status":"CONFIRMADO"},
         ]
@@ -943,7 +952,7 @@ def avaliar_modelo_ocupacao_jf(zona: str, modelo: str, uso: str = "não informad
     out = {
         "ok": True, "status": regra["status"], "zona": zona, "modelo": modelo,
         "uso": uso, "ca_aplicavel_preliminar": 2.8,
-        "ca_status": "CONFIRMADO COMO LIMITE DO MODELO, SUJEITO À APLICABILIDADE DO USO",
+        "ca_status": "CONDICIONADO — CA 2,8 marcado com asterisco no Anexo 8; não tratar como CA básico irrestrito",
         "fontes": regra["fontes"], "observacoes": regra["observacoes"],
         "pendencias": regra["pendencias"],
         "vagas": {"status":"CALCULAR SEPARADAMENTE", "fonte":"Lei Complementar nº 54/2016",
@@ -951,6 +960,7 @@ def avaliar_modelo_ocupacao_jf(zona: str, modelo: str, uso: str = "não informad
     }
     if area_lote_m2 > 0:
         out["potencial_pelo_ca_m2"] = round(area_lote_m2 * 2.8, 2)
+        out["potencial_pelo_ca_status"] = "CALCULADO SOBRE CA CONDICIONADO 2,8; NÃO DEFINITIVO"
     return out
 
 if __name__ == "__main__":
