@@ -126,6 +126,8 @@ MODEL_RULES = {
 # referência são armazenados aqui. Quando a legislação vigente não foi confirmada
 # diretamente pelo texto do Anexo 8, o campo permanece PENDENTE e não entra em
 # cálculo de potencial edificável.
+ANEXO8_OFICIAL_URL = "https://www.camarajf.mg.gov.br/sal/anexo.php?cod=55&t=nj"
+
 ENVELOPE_RULES = {
     "M3A": {
         "status": "PARCIALMENTE_CONFIRMADO",
@@ -138,11 +140,17 @@ ENVELOPE_RULES = {
         "afastamento_lateral_fundos_demais_pavimentos_m": None,
         "pavimentos_primeira_faixa": 3,
         "observacao": (
-            "A estrutura de TO é tratada como referência preliminar para M3A; "
-            "recuos/afastamentos e a redação vigente do Anexo 8 não estão "
-            "suficientemente confirmados nesta ferramenta para cálculo definitivo."
+            "No Anexo 8 vigente consultado, o M3A admite taxa de ocupação de "
+            "100% do 1º ao 3º pavimento, até 9,20 m de altura, e 65% nos "
+            "demais pavimentos. O CA de 2,8 aparece como coeficiente marcado "
+            "com asterisco, sujeito às condições legais específicas; o SISURB "
+            "pode informar o parâmetro aplicável ao lote. Os recuos/afastamentos "
+            "do M3A permanecem pendentes nesta versão para evitar interpretação "
+            "indevida da tabela consolidada."
         ),
-        "fonte_contextual": "Lei 6.910/1986, Anexo 8; verificar texto vigente",
+        "fonte_oficial_anexo8": ANEXO8_OFICIAL_URL,
+        "fonte_legislacao": LEGISLACAO_URL,
+        "data_referencia_legislacao": "2026-06-25 (compilação externa consultada apenas para conferência textual)",
     }
 }
 
@@ -559,9 +567,8 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
                     "a LC 54/2016, art. 2º, cancelou a última observação de vagas do Anexo 8."
                 )
                 resultado["pendencias"].append(
-                    "Para fechar o envelope do M3A, conferir diretamente o Anexo 8 "
-                    "e as condições específicas de afastamento/taxa de ocupação; "
-                    "esta ferramenta deliberadamente não infere valores ausentes."
+                    "O Anexo 8 consultado confirma para M3A: TO de 100% do 1º ao 3º pavimento até 9,20 m e 65% nos demais pavimentos. "
+                    "Os recuos/afastamentos continuam pendentes de interpretação segura para cálculo geométrico."
                 )
             elif m in MODEL_RULES:
                 resultado["modelo"] = MODEL_RULES[m]
@@ -612,11 +619,17 @@ def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
             "frontal": {"valor_m": None, "status": "PENDENTE"},
             "lateral": {"valor_m": None, "status": "PENDENTE"},
             "fundos": {"valor_m": None, "status": "PENDENTE"},
+            "observacao": "Os afastamentos do M3A ainda não são convertidos em cálculo geométrico nesta versão.",
         },
-        "altura": {"status": "PENDENTE", "observacao": "Não confundir gabarito cadastral com regra legal."},
+        "altura": {
+            "status": "PARCIALMENTE_CONFIRMADO",
+            "altura_faixa_to_100pct_m": 9.20,
+            "observacao": "9,20 m é o limite de altura da faixa com TO de 100%; não é o gabarito máximo total da edificação.",
+        },
         "envelope_calculavel": False,
         "motivo": "Sem recuos/afastamentos legalmente confirmados não é possível calcular o envelope real.",
         "fonte": LEGISLACAO_URL,
+        "fonte_anexo8_oficial": ANEXO8_OFICIAL_URL,
     }
     if area_lote_m2 > 0:
         resultado["implantacao_teorica_100pct_m2"] = round(area_lote_m2, 2)
