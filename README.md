@@ -1,8 +1,8 @@
-# SISURB Juiz de Fora — V12
+# SISURB Juiz de Fora — V13
 
 MCP para análise preliminar de viabilidade urbanística a partir das camadas oficiais do SISURB/PJF.
 
-## Correções da V12
+## Correções da V13
 
 - `gabarito` do cadastro SISURB é normalizado como `gabarito_cadastral_sisurb`.
 - Nunca converter automaticamente `gabarito_cadastral_sisurb` em número de pavimentos.
@@ -27,3 +27,15 @@ Após deploy, no Claude digitar apenas:
 `Rua São Mateus, 490`
 
 Esperado: gabarito cadastral separado de pavimentos legais; potencial por pavimentos PENDENTE; fator limitante global PENDENTE; e, se o SISURB responder, área/percentual de restrição calculados.
+
+
+## V13 — lógica Anexo 6/8 e uso
+- Não interpreta `gabarito` cadastral do SISURB como número de pavimentos.
+- Adiciona `classificar_uso_zr2_corredor` para separar uso residencial, comercial/serviço local/setorial e usos que exigem enquadramento adicional.
+- Não usa o rótulo cadastral "loja" para definir automaticamente o uso futuro.
+- Para ZR2-Corredor residencial unifamiliar, reconhece até M3A e CA 2,8 quando aplicável.
+- Para comércio/serviço local, reconhece até M1A; para setorial, até M2A, sempre condicionando a classificação da atividade ao Anexo 7.
+- Envelope M3A permanece conservador: não calcula área geométrica definitiva sem testada/profundidade e confirmação inequívoca do recuo frontal.
+- A regra lateral/fundos do M3A é exposta separadamente e não é convertida automaticamente em área edificável.
+- `fator_limitante_global` só pode ser concluído quando os principais limites estiverem efetivamente confirmados.
+- Relatório final não deve produzir SVG, HTML, código ou duplicações.

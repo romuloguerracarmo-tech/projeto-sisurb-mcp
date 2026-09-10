@@ -7,7 +7,7 @@ from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 from mcp.server import MCPServer
 
-mcp = MCPServer("SISURB Juiz de Fora")
+mcp = MCPServer("SISURB Juiz de Fora V13")
 
 LOTES_URL = (
     "https://sisurb.pjf.mg.gov.br/server/rest/services/"
@@ -70,9 +70,9 @@ MODEL_RULES = {
     "M3A": {
         "area_minima_m2": 360.0, "testada_minima_m": 10.0,
         "ca_max": 2.2, "ca_max_com_vagas": 2.8,
-        "taxa_ocupacao": "consultar condição específica no Anexo 8; não inferir automaticamente",
+        "taxa_ocupacao": "1º ao 3º pavimento = 100% até 9,20 m; demais = 65% (conforme consolidação textual consultada)",
         "recuo_frontal_m": None,
-        "afastamento_lateral_fundos": "consultar condição específica no Anexo 8; não inferir automaticamente"
+        "afastamento_lateral_fundos": "1º ao 3º pavimento = 0; demais = uma divisa = 0 e demais = 1,5 m (parâmetro a confirmar para o texto vigente aplicável)"
     },
     "M4": {
         "area_minima_m2": 360.0, "testada_minima_m": 10.0,
@@ -138,17 +138,16 @@ ENVELOPE_RULES = {
         "to_demais_pavimentos_pct": 65.0,
         "recuo_frontal_primeiros_pavimentos_m": None,
         "recuo_frontal_demais_pavimentos_m": None,
-        "afastamento_lateral_fundos_primeiros_pavimentos_m": None,
-        "afastamento_lateral_fundos_demais_pavimentos_m": None,
-        "pavimentos_primeira_faixa": 3,
+        "afastamento_lateral_fundos_primeiros_pavimentos_m": 0.0,
+        "afastamento_lateral_fundos_demais_pavimentos_m": "uma divisa = 0; demais = 1,5 m",
+        "pavimentos_primeira_faixa": None,
         "observacao": (
-            "No Anexo 8 vigente consultado, o M3A admite taxa de ocupação de "
-            "100% do 1º ao 3º pavimento, até 9,20 m de altura, e 65% nos "
-            "demais pavimentos. O CA de 2,8 aparece como coeficiente marcado "
-            "com asterisco, sujeito às condições legais específicas; o SISURB "
-            "pode informar o parâmetro aplicável ao lote. Os recuos/afastamentos "
-            "do M3A permanecem pendentes nesta versão para evitar interpretação "
-            "indevida da tabela consolidada."
+            "A consolidação textual consultada registra para M3A TO de 100% até 9,20 m e 65% nos demais pavimentos. "
+            "A Tabela B do Anexo 6 permite até M3A para uso residencial unifamiliar em ZR2-Corredor. "
+            "O Anexo 8 oficial disponibilizado pela Câmara deve prevalecer em caso de divergência. "
+            "O campo cadastral SISURB gabarito não é usado para inferir pavimentos. "
+            "Os afastamentos laterais/fundos podem ser representados como regra de envelope, mas o recuo frontal do M3A "
+            "não será inventado enquanto não houver leitura inequívoca da coluna correspondente no texto vigente."
         ),
         "fonte_oficial_anexo8": ANEXO8_OFICIAL_URL,
         "fonte_legislacao": LEGISLACAO_URL,
@@ -633,7 +632,7 @@ def analisar_lote_sisurb(endereco: str = "", id_lote: str = "", geocodigo: str =
         "ok": bool(saida), "status": "CONCLUÍDO" if saida else "PENDENTE",
         "lotes": saida, "buscar_lote": busca,
         "regras_de_interpretacao_obrigatorias": [
-            "gabarito_cadastral_sisurb é apenas dado cadastral; NÃO é número de pavimentos.",
+            "gabarito_cadastral_sisurb é apenas dado cadastral; NÃO é número de pavimentos e NÃO entra em cálculos de potencial.",
             "pavimentos_legais_confirmados permanece nulo até confirmação normativa.",
             "Não calcular TO × pavimentos nem declarar fator limitante global sem pavimentos legais, recuos e efeito das restrições confirmados.",
             "Não produzir SVG, código, markup de visualização ou blocos repetidos no relatório final."
@@ -681,6 +680,42 @@ def consultar_zoneamento_sisurb(nome_zona: str) -> dict:
             "legislação incidente. Não substitui a leitura da legislação."
         ),
     }
+
+@mcp.tool()
+def classificar_uso_zr2_corredor(categoria_uso: str, subtipo: str = "") -> dict:
+    """Determina o modelo máximo preliminar para usos explicitamente informados em ZR2-Corredor.
+
+    Não usa o rótulo cadastral "loja" como classificação automática da atividade futura.
+    A classificação comercial detalhada deve ser feita pelo Anexo 7 quando a atividade for conhecida.
+    """
+    cat = norm(categoria_uso)
+    sub = norm(subtipo)
+    out = {
+        "ok": True, "zona": "ZR2-Corredor", "categoria_uso_informada": categoria_uso,
+        "subtipo_informado": subtipo or None, "status": "PENDENTE",
+        "modelo_maximo": None, "ca_maximo": None, "fonte": LEGISLACAO_URL,
+        "observacoes": []
+    }
+    if "RESIDENCIAL" in cat and ("UNIFAMILIAR" in cat or not sub):
+        out.update({"status":"CONFIRMADO","modelo_maximo":"M3A","ca_maximo":2.8})
+        out["observacoes"].append("ZR2-Corredor: uso residencial unifamiliar até M3A; CA 2,8 quando aplicável ao M3A.")
+    elif "COMERCIAL" in cat or "SERVICO" in cat or "SERVIÇO" in cat:
+        if "SETORIAL" in sub:
+            out.update({"status":"CONFIRMADO","modelo_maximo":"M2A","ca_maximo":2.1})
+            out["observacoes"].append("Para comércio/serviço setorial, o Anexo 6 indica até M2A; a atividade deve ser classificada no Anexo 7.")
+        elif "LOCAL" in sub or "BAIRRO" in sub or not sub:
+            out.update({"status":"CONFIRMADO","modelo_maximo":"M1A","ca_maximo":1.0})
+            out["observacoes"].append("Para comércio/serviço local, o Anexo 6 indica até M1A; a atividade e o porte devem ser confirmados no Anexo 7.")
+        else:
+            out["observacoes"].append("Subtipo comercial não reconhecido; classifique a atividade pelo Anexo 7 antes de definir o modelo.")
+    elif "INSTITUCIONAL" in cat:
+        out["observacoes"].append("Institucional depende do enquadramento específico no Anexo 6/7 e da atividade; não será inferido automaticamente.")
+    elif "INDUSTRIAL" in cat:
+        out["observacoes"].append("Industrial depende do grupo da atividade no Anexo 6/7; não será inferido automaticamente.")
+    else:
+        out["observacoes"].append("Categoria de uso não reconhecida. Informe a categoria e, se comercial/serviço, o subtipo.")
+    out["regra_critica"] = "O rótulo cadastral de uma inscrição (ex.: 'loja') não define sozinho o uso futuro nem o CA."
+    return out
 
 @mcp.tool()
 def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "residencial_unifamiliar") -> dict:
@@ -744,50 +779,37 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
 @mcp.tool()
 def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
                                profundidade_m: float = 0.0, pavimentos_confirmados: int = 0) -> dict:
-    """Retorna o estado dos parâmetros de envelope do M3A sem inventar recuos.
+    """Retorna os parâmetros do M3A e separa regras normativas de dados cadastrais.
 
-    A ferramenta separa parâmetros confirmados, referências preliminares e
-    parâmetros ainda pendentes. Não produz potencial edificável definitivo.
+    Não calcula envelope geométrico sem testada/profundidade e sem recuo frontal
+    inequivocamente confirmado. Nunca usa o gabarito cadastral SISURB como pavimentos.
     """
     regra = ENVELOPE_RULES["M3A"].copy()
     resultado = {
-        "ok": True,
-        "modelo": "M3A",
-        "status": regra.pop("status"),
+        "ok": True, "modelo": "M3A", "status": regra.pop("status"),
         "parametros": regra,
-        "entradas": {
-            "area_lote_m2": area_lote_m2 or None,
-            "testada_m": testada_m or None,
-            "profundidade_m": profundidade_m or None,
-            "pavimentos_confirmados": pavimentos_confirmados or None,
-        },
+        "entradas": {"area_lote_m2": area_lote_m2 or None, "testada_m": testada_m or None,
+                     "profundidade_m": profundidade_m or None, "pavimentos_confirmados": pavimentos_confirmados or None},
         "recuos": {
-            "frontal": {"valor_m": None, "status": "PENDENTE"},
-            "lateral": {"valor_m": None, "status": "PENDENTE"},
-            "fundos": {"valor_m": None, "status": "PENDENTE"},
-            "observacao": "Os afastamentos do M3A ainda não são convertidos em cálculo geométrico nesta versão.",
+            "frontal": {"valor_m": None, "status": "PENDENTE", "motivo": "coluna do M3A não confirmada de forma inequívoca no texto vigente acessível"},
+            "lateral_primeiros_pavimentos": {"valor_m": 0.0, "status": "PARAMETRO_DE_ANEXO8"},
+            "lateral_fundos_demais": {"regra": "uma divisa = 0; demais = 1,5 m", "status": "PARAMETRO_DE_ANEXO8"},
+            "observacao": "Não converter esses parâmetros em área de implantação sem geometria do lote e sem definição das divisas aplicáveis."
         },
-        "altura": {
-            "status": "PARCIALMENTE_CONFIRMADO",
-            "altura_faixa_to_100pct_m": 9.20,
-            "observacao": "9,20 m é o limite de altura da faixa com TO de 100%; não é o gabarito máximo total da edificação.",
-        },
-        "pavimentos": {
-            "status": "PENDENTE" if pavimentos_confirmados <= 0 else "CONFIRMADO_EXTERNAMENTE",
-            "valor": pavimentos_confirmados if pavimentos_confirmados > 0 else None,
-            "regra": "Nunca usar automaticamente o campo cadastral SISURB 'gabarito' como número de pavimentos.",
-        },
+        "altura": {"status":"PARCIALMENTE_CONFIRMADO", "altura_faixa_to_100pct_m":9.20,
+                  "observacao":"9,20 m é limite da faixa de TO indicada na consolidação consultada; não é gabarito máximo total."},
+        "pavimentos": {"status":"CONFIRMADO_EXTERNAMENTE" if pavimentos_confirmados>0 else "PENDENTE",
+                       "valor":pavimentos_confirmados if pavimentos_confirmados>0 else None,
+                       "regra":"Nunca usar o campo gabarito do SISURB para inferir pavimentos."},
         "envelope_calculavel": False,
-        "motivo": "Sem recuos/afastamentos e número de pavimentos legalmente confirmados não é possível calcular o envelope real.",
-        "fonte": LEGISLACAO_URL,
-        "fonte_anexo8_oficial": ANEXO8_OFICIAL_URL,
+        "motivo":"Testada/profundidade e recuo frontal aplicável ainda não estão suficientemente confirmados para um envelope geométrico confiável.",
+        "fonte": LEGISLACAO_URL, "fonte_anexo8_oficial": ANEXO8_OFICIAL_URL
     }
     if area_lote_m2 > 0:
-        resultado["implantacao_teorica_100pct_m2"] = round(area_lote_m2, 2)
-        resultado["implantacao_65pct_m2"] = round(area_lote_m2 * 0.65, 2)
-        resultado["status_calculo_to"] = "CALCULADO, não equivale ao envelope construtivo"
+        resultado["implantacao_teorica_100pct_m2"] = round(area_lote_m2,2)
+        resultado["implantacao_65pct_m2"] = round(area_lote_m2*0.65,2)
+        resultado["status_calculo_to"] = "CALCULADO — limite abstrato de TO, não envelope"
     return resultado
-
 
 @mcp.tool()
 def comparar_limitantes_sisurb(area_lote_m2: float, ca: float,
@@ -863,7 +885,7 @@ def calcular_potencial_preliminar(area_lote_m2: float, ca: float,
         ),
         "menor_valor_matematico_disponivel_m2": round(menor,2) if menor is not None else None,
         "fator_limitante_global": "PENDENTE",
-        "potencial_adicional_teorico_m2": round(max(0.0, menor - area_existente_m2), 2) if menor is not None else None,
+        "potencial_adicional_teorico_m2": round(max(0.0, menor - area_existente_m2), 2) if (menor is not None and pav_area is not None) else None,
         "classificacao": "CÁLCULO MATEMÁTICO PRELIMINAR, NÃO POTENCIAL EDIFICÁVEL DEFINITIVO",
         "aviso": (
             "Nunca preencher pavimentos_confirmados usando apenas o campo 'gabarito' do SISURB. "
