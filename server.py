@@ -392,17 +392,31 @@ def consultar_restricoes_sisurb(geometria_lote: dict) -> dict:
 
     fields = "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano"
     try:
+        # Primeiro retorna apenas atributos. Em alguns momentos o SISURB falha
+        # quando precisa devolver simultaneamente geometria e interseção.
         data = arcgis_query(
-            RESTRICOES_URL,
-            "1=1",
-            fields,
-            return_geometry=True,
-            geometry=geometry,
+            RESTRICOES_URL, "1=1", fields,
+            return_geometry=False, geometry=geometry,
             geometry_type="esriGeometryPolygon",
             spatial_rel="esriSpatialRelIntersects",
-            in_sr=31983, out_sr=31983,
-            timeout=45,
+            in_sr=31983, out_sr=31983, timeout=60,
         )
+        feats = data.get("features", [])
+        if feats:
+            ids=[]
+            for f in feats:
+                oid=(f.get("attributes") or {}).get("OBJECTID")
+                if oid is not None:
+                    ids.append(int(oid))
+            # Recupera somente as geometrias efetivamente intersectantes.
+            if ids:
+                where_ids=", ".join(str(x) for x in ids[:200])
+                gd=arcgis_query(
+                    RESTRICOES_URL, f"OBJECTID IN ({where_ids})", fields,
+                    return_geometry=True, out_sr=31983, timeout=60,
+                )
+                if gd.get("features"):
+                    feats=gd["features"]
     except Exception as exc:
         return {
             "ok": False,
@@ -410,11 +424,14 @@ def consultar_restricoes_sisurb(geometria_lote: dict) -> dict:
             "erro": "Falha na consulta espacial da camada de restrições.",
             "detalhe_tecnico": str(exc),
             "fonte": RESTRICOES_URL,
+            "tentativa": "consulta de atributos primeiro e geometrias somente das feições intersectantes",
         }
 
-    feats = data.get("features", [])
     restricoes = [f.get("attributes", {}) for f in feats]
-    cobertura = _area_intersecao_restricoes(geometry, feats)
+    cobertura = _area_intersecao_restricoes(geometry, feats) if feats and all(f.get("geometry") for f in feats) else {
+        "status_calculo_area": "PENDENTE",
+        "motivo": "Feições identificadas, mas suas geometrias não foram recuperadas."
+    }
     return {
         "ok": True,
         "status": "SEM RESTRIÇÃO IDENTIFICADA" if not restricoes else "RESTRIÇÃO IDENTIFICADA",
@@ -601,14 +618,31 @@ def analisar_lote_sisurb(endereco: str = "", id_lote: str = "", geocodigo: str =
     for g in geometrias[:10]:
         z=consultar_zoneamento_por_lote(g.get("geometry",{}))
         r=consultar_restricoes_sisurb(g.get("geometry",{}))
-        saida.append({"lote":g, "zoneamento":z, "restricoes":r})
+        # Normaliza explicitamente o dado cadastral para impedir que consumidores
+        # do MCP confundam “gabarito” com número de pavimentos.
+        lote_norm=dict(g)
+        if isinstance(lote_norm.get("lote"), dict):
+            attrs=dict(lote_norm["lote"])
+            if "gabarito" in attrs:
+                attrs["gabarito_cadastral_sisurb"] = attrs.pop("gabarito")
+                attrs["pavimentos_legais_confirmados"] = None
+                attrs["regra_critica"] = "NUNCA converter gabarito_cadastral_sisurb em número de pavimentos sem confirmação legal externa."
+            lote_norm["lote"]=attrs
+        saida.append({"lote":lote_norm, "zoneamento":z, "restricoes":r})
     return {
         "ok": bool(saida), "status": "CONCLUÍDO" if saida else "PENDENTE",
         "lotes": saida, "buscar_lote": busca,
+        "regras_de_interpretacao_obrigatorias": [
+            "gabarito_cadastral_sisurb é apenas dado cadastral; NÃO é número de pavimentos.",
+            "pavimentos_legais_confirmados permanece nulo até confirmação normativa.",
+            "Não calcular TO × pavimentos nem declarar fator limitante global sem pavimentos legais, recuos e efeito das restrições confirmados.",
+            "Não produzir SVG, código, markup de visualização ou blocos repetidos no relatório final."
+        ],
         "observacao": (
-            "Fluxo integrado espacial: lote → zoneamento → restrições. A V11 também calcula a área e o percentual do lote "
-            "intersectados pelas feições de restrição quando as geometrias estão disponíveis. Nenhum parâmetro legal é inferido "
-            "apenas pelo nome da zona, e o efeito jurídico da restrição permanece separado do cálculo espacial."
+            "Fluxo integrado espacial: lote → zoneamento → restrições. A V12 tenta primeiro identificar as restrições "
+            "sem retornar geometria e depois recupera apenas as geometrias das feições encontradas, reduzindo o risco de timeout. "
+            "Quando as geometrias estão disponíveis, calcula área e percentual do lote intersectados. O efeito jurídico da restrição "
+            "permanece separado do cálculo espacial."
         )
     }
 
@@ -797,7 +831,7 @@ def comparar_limitantes_sisurb(area_lote_m2: float, ca: float,
         "restricao_espacial": "IDENTIFICADA — efeito normativo PENDENTE" if restricao_impacto_confirmado else "não informada/sem impacto confirmado",
         "recuos": "CONFIRMADOS" if recuos_confirmados else "PENDENTE",
         "potencial_edificavel_definitivo": "PENDENTE" if not completo else round(menor[1],2),
-        "area_adicional_teorica": round(max(0, menor[1]-area_existente_m2),2) if menor else None,
+        "area_adicional_teorica": round(max(0, menor[1]-area_existente_m2),2) if (menor and completo) else None,
         "aviso": (
             "Não declarar CA como fator limitante global apenas porque é o menor número disponível. "
             "Enquanto pavimentos legais, recuos/envelope ou efeitos normativos de restrições estiverem pendentes, "
@@ -867,7 +901,7 @@ def consultar_regra_urbanistica_jf(zona: str, modelo: str, uso: str = "não info
         ]
         result["observacoes"] = [
             "A LC 54/2016, art. 2º, cancelou a última observação relativa a vagas que figurava no Anexo 8.",
-            "Esta versão NÃO condiciona automaticamente o CA 2,8 do M3A à antiga tabela de vagas.",
+            "Esta versão V12 NÃO condiciona automaticamente o CA 2,8 do M3A à antiga tabela de vagas.",
             "Vagas continuam sendo dimensionadas separadamente pela LC 54/2016.",
             "Para uso misto, considerar os arts. 32 e 33 da Lei 6.910/1986."
         ]

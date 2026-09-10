@@ -1,52 +1,29 @@
-# SISURB Juiz de Fora MCP — V11
+# SISURB Juiz de Fora — V12
 
-Versão 11 do conector MCP para análise urbanística preliminar em Juiz de Fora/MG.
+MCP para análise preliminar de viabilidade urbanística a partir das camadas oficiais do SISURB/PJF.
 
-## Alterações principais da V11
+## Correções da V12
 
-- **Não converte mais o campo cadastral `gabarito` do SISURB em número de pavimentos.**
-- `consultar_envelope_m3a_jf` agora recebe apenas `pavimentos_confirmados`; o padrão é zero/PENDENTE.
-- `calcular_potencial_preliminar` não calcula `TO × pavimentos` sem número de pavimentos legalmente confirmado.
-- `comparar_limitantes_sisurb` não declara o CA como fator limitante global enquanto pavimentos, recuos/envelope ou efeitos normativos relevantes estiverem pendentes.
-- A consulta de restrições passa a solicitar a geometria das feições e calcula, localmente com **Shapely**, a área de interseção em m² e o percentual do lote atingido.
-- O total de área restrita usa união geométrica para evitar dupla contagem quando houver sobreposição entre restrições.
-- O cálculo espacial da restrição é separado do seu **efeito jurídico/normativo**, que continua PENDENTE até confirmação legal.
+- `gabarito` do cadastro SISURB é normalizado como `gabarito_cadastral_sisurb`.
+- Nunca converter automaticamente `gabarito_cadastral_sisurb` em número de pavimentos.
+- `pavimentos_legais_confirmados` permanece nulo até confirmação normativa externa.
+- Não calcular TO × pavimentos nem declarar fator limitante global enquanto faltarem pavimentos legais, recuos/envelope ou efeito normativo das restrições.
+- A consulta de restrições usa estratégia em duas etapas: primeiro atributos das feições intersectantes; depois recupera apenas as geometrias dessas feições. Isso reduz timeouts do SISURB.
+- Quando as geometrias das restrições estão disponíveis, calcula área total intersectada, percentual do lote e área não atingida, sem dupla contagem de sobreposições.
+- Se o servidor da Prefeitura estiver indisponível, o resultado fica PENDENTE e não inventa a restrição.
+- O MCP sinaliza explicitamente que o relatório final não deve conter SVG, código, markup ou duplicações.
 
-## Regra M3A preservada
+## Fontes oficiais principais
 
-A ferramenta mantém como referência confirmada para M3A a faixa de TO de 100% do 1º ao 3º pavimento até 9,20 m e 65% nos demais pavimentos. Os 9,20 m **não são tratados como gabarito máximo total**. Recuos/afastamentos ainda permanecem pendentes de confirmação segura para cálculo geométrico.
-
-## Implantação no Render
-
-Build command:
-
-```bash
-pip install -r requirements.txt
-```
-
-Start command:
-
-```bash
-python server.py
-```
-
-Endpoint MCP:
-
-```text
-https://projeto-sisurb-mcp.onrender.com/mcp
-```
+- Lotes urbanísticos: https://sisurb.pjf.mg.gov.br/server/rest/services/uso_cad_lotes/MapServer/158/query
+- Zoneamento: https://sisurb.pjf.mg.gov.br/server/rest/services/uso_zon_zoneamento_urbano_pjf/MapServer/167/query
+- Áreas de restrição: https://sisurb.pjf.mg.gov.br/server/rest/services/SISURB_peus/anl_areas_restricao_P6/MapServer/0/query
+- Lei 6.910/1986: https://www.camarajf.mg.gov.br/sal/norma.php?njc=&njn=06910&njt=LEI
 
 ## Teste recomendado
 
-No Claude, após o deploy, digite somente:
+Após deploy, no Claude digitar apenas:
 
-```text
-Rua São Mateus, 490
-```
+`Rua São Mateus, 490`
 
-No novo relatório, verifique especialmente:
-
-1. `gabarito = 3` aparece apenas como dado cadastral, sem virar automaticamente 3 pavimentos;
-2. `TO × pavimentos` fica PENDENTE enquanto o número legal de pavimentos não estiver confirmado;
-3. o fator limitante global fica PENDENTE se houver parâmetros essenciais ainda pendentes;
-4. a restrição informa **área intersectada (m²)** e **percentual do lote (%)**, quando a geometria da camada estiver disponível.
+Esperado: gabarito cadastral separado de pavimentos legais; potencial por pavimentos PENDENTE; fator limitante global PENDENTE; e, se o SISURB responder, área/percentual de restrição calculados.
