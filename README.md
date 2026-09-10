@@ -1,25 +1,52 @@
-# SISURB MCP Juiz de Fora — V10
+# SISURB Juiz de Fora MCP — V11
 
-V10 atualiza a análise do envelope M3A com conferência do Anexo 8 da Lei 6.910/1986 e mantém a regra de não inventar parâmetros que não estejam suficientemente seguros para cálculo geométrico.
+Versão 11 do conector MCP para análise urbanística preliminar em Juiz de Fora/MG.
 
-## M3A confirmado nesta versão
-- Taxa de ocupação: 100% do 1º ao 3º pavimento, até 9,20 m de altura.
-- Demais pavimentos: 65%.
-- O CA de 2,8 permanece tratado como coeficiente condicionado pela marcação (*) do Anexo 8 e pela aplicabilidade ao lote/uso; o SISURB é usado para informar o parâmetro cadastral aplicável.
-- 9,20 m NÃO é tratado como gabarito máximo total da edificação; é o limite da faixa de TO de 100%.
+## Alterações principais da V11
 
-## Ainda pendente
-- Recuo frontal e afastamentos laterais/fundos do M3A para cálculo geométrico automático.
-- Gabarito/altura máxima total como regra legal.
-- Efeito normativo das restrições espaciais identificadas pelo SISURB.
+- **Não converte mais o campo cadastral `gabarito` do SISURB em número de pavimentos.**
+- `consultar_envelope_m3a_jf` agora recebe apenas `pavimentos_confirmados`; o padrão é zero/PENDENTE.
+- `calcular_potencial_preliminar` não calcula `TO × pavimentos` sem número de pavimentos legalmente confirmado.
+- `comparar_limitantes_sisurb` não declara o CA como fator limitante global enquanto pavimentos, recuos/envelope ou efeitos normativos relevantes estiverem pendentes.
+- A consulta de restrições passa a solicitar a geometria das feições e calcula, localmente com **Shapely**, a área de interseção em m² e o percentual do lote atingido.
+- O total de área restrita usa união geométrica para evitar dupla contagem quando houver sobreposição entre restrições.
+- O cálculo espacial da restrição é separado do seu **efeito jurídico/normativo**, que continua PENDENTE até confirmação legal.
 
-## Ferramentas
-- `consultar_envelope_m3a_jf`: separa TO, faixa de altura e recuos/afastamentos.
-- `comparar_limitantes_sisurb`: compara CA e TO×pavimentos como limites independentes; não multiplica CA×TO×pavimentos.
+## Regra M3A preservada
 
-## Fonte oficial principal
-Câmara Municipal de Juiz de Fora — Lei 6.910/1986 e alterações:
-https://www.camarajf.mg.gov.br/sal/norma.php?njc=&njn=06910&njt=LEI
+A ferramenta mantém como referência confirmada para M3A a faixa de TO de 100% do 1º ao 3º pavimento até 9,20 m e 65% nos demais pavimentos. Os 9,20 m **não são tratados como gabarito máximo total**. Recuos/afastamentos ainda permanecem pendentes de confirmação segura para cálculo geométrico.
 
-Anexo 8 oficial disponibilizado pela Câmara:
-https://www.camarajf.mg.gov.br/sal/anexo.php?cod=55&t=nj
+## Implantação no Render
+
+Build command:
+
+```bash
+pip install -r requirements.txt
+```
+
+Start command:
+
+```bash
+python server.py
+```
+
+Endpoint MCP:
+
+```text
+https://projeto-sisurb-mcp.onrender.com/mcp
+```
+
+## Teste recomendado
+
+No Claude, após o deploy, digite somente:
+
+```text
+Rua São Mateus, 490
+```
+
+No novo relatório, verifique especialmente:
+
+1. `gabarito = 3` aparece apenas como dado cadastral, sem virar automaticamente 3 pavimentos;
+2. `TO × pavimentos` fica PENDENTE enquanto o número legal de pavimentos não estiver confirmado;
+3. o fator limitante global fica PENDENTE se houver parâmetros essenciais ainda pendentes;
+4. a restrição informa **área intersectada (m²)** e **percentual do lote (%)**, quando a geometria da camada estiver disponível.

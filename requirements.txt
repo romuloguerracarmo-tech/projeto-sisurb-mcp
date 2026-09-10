@@ -1,2 +1,4 @@
 mcp>=2,<3
 requests>=2.31,<3
+
+shapely>=2.1,<3

@@ -3,6 +3,8 @@ import os
 import re
 import unicodedata
 import requests
+from shapely.geometry import Polygon, MultiPolygon
+from shapely.ops import unary_union
 from mcp.server import MCPServer
 
 mcp = MCPServer("SISURB Juiz de Fora")
@@ -277,6 +279,106 @@ def buscar_lote_sisurb(endereco: str) -> dict:
         ),
     }
 
+def _ring_polygon(ring):
+    """Converte um anel ArcGIS simples em Polygon Shapely; retorna None se inválido."""
+    try:
+        pts = [(float(p[0]), float(p[1])) for p in ring if len(p) >= 2]
+        if len(pts) < 3:
+            return None
+        if pts[0] != pts[-1]:
+            pts.append(pts[0])
+        poly = Polygon(pts)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        return poly if not poly.is_empty else None
+    except Exception:
+        return None
+
+
+def _esri_polygon_to_shapely(geometry):
+    """Converte geometria poligonal ArcGIS em Shapely.
+
+    Usa contenção entre anéis para reconhecer ilhas/furos sem depender apenas
+    da orientação dos vértices. Adequado às geometrias projetadas em SIRGAS 2000 / UTM 23S (EPSG:31983).
+    """
+    rings = (geometry or {}).get("rings") or []
+    polys = [p for p in (_ring_polygon(r) for r in rings) if p is not None]
+    if not polys:
+        return None
+    # Ordena do maior para o menor e calcula profundidade de contenção.
+    polys.sort(key=lambda x: x.area, reverse=True)
+    outers = []
+    holes_by_outer = {}
+    for i, poly in enumerate(polys):
+        rp = poly.representative_point()
+        containers = [j for j, parent in enumerate(polys[:i]) if parent.contains(rp)]
+        depth = len(containers)
+        if depth % 2 == 0:
+            outers.append(poly)
+            holes_by_outer[id(poly)] = []
+        else:
+            # associa o furo ao menor anel externo que o contém
+            candidates = [o for o in outers if o.contains(rp)]
+            if candidates:
+                parent = min(candidates, key=lambda x: x.area)
+                holes_by_outer[id(parent)].append(list(poly.exterior.coords))
+    rebuilt=[]
+    for outer in outers:
+        try:
+            q=Polygon(list(outer.exterior.coords), holes_by_outer.get(id(outer), []))
+            if not q.is_valid:
+                q=q.buffer(0)
+            if not q.is_empty:
+                rebuilt.append(q)
+        except Exception:
+            rebuilt.append(outer)
+    if not rebuilt:
+        return None
+    geom=unary_union(rebuilt)
+    return geom if not geom.is_empty else None
+
+
+def _area_intersecao_restricoes(geometry_lote, restriction_features):
+    """Calcula área e percentual do lote atingidos pelas feições de restrição."""
+    lote = _esri_polygon_to_shapely(geometry_lote)
+    if lote is None or lote.area <= 0:
+        return {"status_calculo_area": "PENDENTE", "motivo": "Geometria do lote inválida para cálculo local."}
+    itens=[]
+    inters=[]
+    for feat in restriction_features:
+        attrs=(feat or {}).get("attributes", {})
+        rg=(feat or {}).get("geometry") or {}
+        shp=_esri_polygon_to_shapely(rg)
+        if shp is None:
+            itens.append({"OBJECTID": attrs.get("OBJECTID"), "area_intersecao_m2": None, "percentual_lote": None, "status": "PENDENTE"})
+            continue
+        inter=lote.intersection(shp)
+        area=max(0.0, float(inter.area)) if not inter.is_empty else 0.0
+        if area > 0:
+            inters.append(inter)
+        itens.append({
+            "OBJECTID": attrs.get("OBJECTID"),
+            "classe": attrs.get("classe"),
+            "tipologia": attrs.get("tipologia"),
+            "categoria": attrs.get("categoria"),
+            "area_intersecao_m2": round(area, 2),
+            "percentual_lote": round((area / lote.area) * 100.0, 2),
+            "status": "CALCULADO",
+        })
+    union=unary_union(inters) if inters else None
+    total=float(union.area) if union is not None and not union.is_empty else 0.0
+    total=min(total, float(lote.area))
+    return {
+        "status_calculo_area": "CALCULADO",
+        "area_lote_geometrica_calculada_m2": round(float(lote.area), 2),
+        "area_total_intersectada_unica_m2": round(total, 2),
+        "percentual_total_lote_intersectado": round((total / lote.area) * 100.0, 2),
+        "area_lote_nao_intersectada_m2": round(max(0.0, float(lote.area) - total), 2),
+        "por_restricao": itens,
+        "observacao": "Áreas calculadas geometricamente em EPSG:31983. Sobreposições entre restrições são unificadas no total para evitar dupla contagem. O cálculo espacial não define, por si só, o efeito jurídico da restrição.",
+    }
+
+
 @mcp.tool()
 def consultar_restricoes_sisurb(geometria_lote: dict) -> dict:
     """Consulta por interseção espacial as áreas de restrição do SISURB para a geometria do lote."""
@@ -288,13 +390,13 @@ def consultar_restricoes_sisurb(geometria_lote: dict) -> dict:
     if not isinstance(geometry, dict) or not geometry.get("rings"):
         return {"ok": False, "status": "PENDENTE", "erro": "Geometria de lote inválida ou sem anéis poligonais."}
 
-    fields = "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano,shape.STArea()"
+    fields = "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano"
     try:
         data = arcgis_query(
             RESTRICOES_URL,
             "1=1",
             fields,
-            return_geometry=False,
+            return_geometry=True,
             geometry=geometry,
             geometry_type="esriGeometryPolygon",
             spatial_rel="esriSpatialRelIntersects",
@@ -312,11 +414,13 @@ def consultar_restricoes_sisurb(geometria_lote: dict) -> dict:
 
     feats = data.get("features", [])
     restricoes = [f.get("attributes", {}) for f in feats]
+    cobertura = _area_intersecao_restricoes(geometry, feats)
     return {
         "ok": True,
         "status": "SEM RESTRIÇÃO IDENTIFICADA" if not restricoes else "RESTRIÇÃO IDENTIFICADA",
         "quantidade": len(restricoes),
         "restricoes": restricoes,
+        "cobertura_espacial": cobertura,
         "fonte": RESTRICOES_URL,
         "metodo": "interseção espacial do polígono do lote com a camada oficial de áreas de restrição",
         "observacao": "A ausência de interseção nesta camada não exclui outras limitações legais ou ambientais que estejam fora desta camada."
@@ -373,16 +477,20 @@ def consultar_restricoes_por_lote(endereco: str = "", id_lote: str = "", geocodi
         try:
             rd = arcgis_query(
                 RESTRICOES_URL, "1=1",
-                "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano,shape.STArea()",
+                "OBJECTID,classe,tipologia,categoria,observacao,fonte,ano",
+                return_geometry=True,
                 geometry=geometry, geometry_type="esriGeometryPolygon",
                 spatial_rel="esriSpatialRelIntersects", in_sr=31983, out_sr=31983, timeout=45
             )
-            restricoes = [x.get("attributes", {}) for x in rd.get("features", [])]
+            rfeats = rd.get("features", [])
+            restricoes = [x.get("attributes", {}) for x in rfeats]
+            cobertura = _area_intersecao_restricoes(geometry, rfeats)
             resultados.append({
                 "lote": attrs,
                 "status": "SEM RESTRIÇÃO IDENTIFICADA" if not restricoes else "RESTRIÇÃO IDENTIFICADA",
                 "quantidade_restricoes": len(restricoes),
                 "restricoes": restricoes,
+                "cobertura_espacial": cobertura,
             })
         except Exception as exc:
             resultados.append({"lote": attrs, "status": "PENDENTE", "erro": str(exc)})
@@ -497,7 +605,11 @@ def analisar_lote_sisurb(endereco: str = "", id_lote: str = "", geocodigo: str =
     return {
         "ok": bool(saida), "status": "CONCLUÍDO" if saida else "PENDENTE",
         "lotes": saida, "buscar_lote": busca,
-        "observacao": "Fluxo integrado espacial: lote → zoneamento → restrições. Nenhum parâmetro legal é inferido apenas pelo nome da zona."
+        "observacao": (
+            "Fluxo integrado espacial: lote → zoneamento → restrições. A V11 também calcula a área e o percentual do lote "
+            "intersectados pelas feições de restrição quando as geometrias estão disponíveis. Nenhum parâmetro legal é inferido "
+            "apenas pelo nome da zona, e o efeito jurídico da restrição permanece separado do cálculo espacial."
+        )
     }
 
 
@@ -597,7 +709,7 @@ def consultar_legislacao_jf(zona: str, modelo: str = "", categoria_uso: str = "r
 
 @mcp.tool()
 def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
-                               profundidade_m: float = 0.0, pavimentos: int = 3) -> dict:
+                               profundidade_m: float = 0.0, pavimentos_confirmados: int = 0) -> dict:
     """Retorna o estado dos parâmetros de envelope do M3A sem inventar recuos.
 
     A ferramenta separa parâmetros confirmados, referências preliminares e
@@ -613,7 +725,7 @@ def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
             "area_lote_m2": area_lote_m2 or None,
             "testada_m": testada_m or None,
             "profundidade_m": profundidade_m or None,
-            "pavimentos": pavimentos or None,
+            "pavimentos_confirmados": pavimentos_confirmados or None,
         },
         "recuos": {
             "frontal": {"valor_m": None, "status": "PENDENTE"},
@@ -626,8 +738,13 @@ def consultar_envelope_m3a_jf(area_lote_m2: float = 0.0, testada_m: float = 0.0,
             "altura_faixa_to_100pct_m": 9.20,
             "observacao": "9,20 m é o limite de altura da faixa com TO de 100%; não é o gabarito máximo total da edificação.",
         },
+        "pavimentos": {
+            "status": "PENDENTE" if pavimentos_confirmados <= 0 else "CONFIRMADO_EXTERNAMENTE",
+            "valor": pavimentos_confirmados if pavimentos_confirmados > 0 else None,
+            "regra": "Nunca usar automaticamente o campo cadastral SISURB 'gabarito' como número de pavimentos.",
+        },
         "envelope_calculavel": False,
-        "motivo": "Sem recuos/afastamentos legalmente confirmados não é possível calcular o envelope real.",
+        "motivo": "Sem recuos/afastamentos e número de pavimentos legalmente confirmados não é possível calcular o envelope real.",
         "fonte": LEGISLACAO_URL,
         "fonte_anexo8_oficial": ANEXO8_OFICIAL_URL,
     }
@@ -643,14 +760,24 @@ def comparar_limitantes_sisurb(area_lote_m2: float, ca: float,
                                 taxa_ocupacao_pct: float = 0.0,
                                 pavimentos_confirmados: int = 0,
                                 area_existente_m2: float = 0.0,
-                                restricao_impacto_confirmado: bool = False) -> dict:
-    """Compara limitantes independentes; não multiplica CA × TO × pavimentos."""
+                                restricao_impacto_confirmado: bool = False,
+                                recuos_confirmados: bool = False) -> dict:
+    """Compara apenas limitantes legalmente confirmados; não transforma gabarito cadastral em pavimentos."""
     ca_area = area_lote_m2 * ca if ca > 0 else None
     to_area = area_lote_m2 * taxa_ocupacao_pct / 100.0 if taxa_ocupacao_pct > 0 else None
     pav_area = to_area * pavimentos_confirmados if (to_area is not None and pavimentos_confirmados > 0) else None
-    candidatos = [("CA", ca_area), ("TO × pavimentos", pav_area)]
-    candidatos_validos = [(n,v) for n,v in candidatos if v is not None]
-    menor = min(candidatos_validos, key=lambda x:x[1]) if candidatos_validos else None
+
+    # Só é lícito declarar um fator limitante global quando os principais limites comparáveis
+    # necessários ao caso estão confirmados. Caso contrário, informa-se apenas o menor entre
+    # itens confirmados, sem convertê-lo em "fator limitante atual" da viabilidade.
+    comparaveis=[]
+    if ca_area is not None:
+        comparaveis.append(("CA", ca_area))
+    if pav_area is not None:
+        comparaveis.append(("TO × pavimentos legalmente confirmados", pav_area))
+    menor = min(comparaveis, key=lambda x:x[1]) if comparaveis else None
+    completo = bool(ca_area is not None and pav_area is not None and recuos_confirmados and not restricao_impacto_confirmado)
+
     return {
         "ok": True,
         "area_lote_m2": area_lote_m2,
@@ -659,40 +786,58 @@ def comparar_limitantes_sisurb(area_lote_m2: float, ca: float,
             "implantacao_to_m2": round(to_area,2) if to_area is not None else None,
             "to_x_pavimentos_m2": round(pav_area,2) if pav_area is not None else None,
         },
-        "menor_limite_entre_itens_confirmados": menor[0] if menor else "PENDENTE",
-        "valor_menor_m2": round(menor[1],2) if menor else None,
-        "restricao_espacial": "IDENTIFICADA — efeito normativo PENDENTE" if restricao_impacto_confirmado else "não informada",
-        "potencial_edificavel_definitivo": "PENDENTE",
+        "pavimentos": {
+            "valor_confirmado": pavimentos_confirmados if pavimentos_confirmados > 0 else None,
+            "status": "CONFIRMADO_EXTERNAMENTE" if pavimentos_confirmados > 0 else "PENDENTE",
+            "aviso": "O campo cadastral 'gabarito' do SISURB não autoriza inferir número de pavimentos.",
+        },
+        "menor_entre_itens_efetivamente_confirmados": menor[0] if menor else "PENDENTE",
+        "valor_menor_confirmado_m2": round(menor[1],2) if menor else None,
+        "fator_limitante_global": menor[0] if (menor and completo) else "PENDENTE",
+        "restricao_espacial": "IDENTIFICADA — efeito normativo PENDENTE" if restricao_impacto_confirmado else "não informada/sem impacto confirmado",
+        "recuos": "CONFIRMADOS" if recuos_confirmados else "PENDENTE",
+        "potencial_edificavel_definitivo": "PENDENTE" if not completo else round(menor[1],2),
         "area_adicional_teorica": round(max(0, menor[1]-area_existente_m2),2) if menor else None,
-        "aviso": "Não multiplicar CA, TO e pavimentos. O envelope e as restrições devem ser comparados separadamente antes da conclusão.",
+        "aviso": (
+            "Não declarar CA como fator limitante global apenas porque é o menor número disponível. "
+            "Enquanto pavimentos legais, recuos/envelope ou efeitos normativos de restrições estiverem pendentes, "
+            "o fator limitante global deve permanecer PENDENTE. Não multiplicar CA × TO × pavimentos."
+        ),
     }
 
 @mcp.tool()
-def calcular_potencial_preliminar(area_lote_m2: float, ca: float, taxa_ocupacao_pct: float, pavimentos: int, area_existente_m2: float = 0.0) -> dict:
-    """Calcula apenas os limites matemáticos preliminares, sem afirmar envelope real."""
-    ca_area = area_lote_m2 * ca
-    implantacao = area_lote_m2 * taxa_ocupacao_pct / 100.0
-    pav_area = implantacao * pavimentos
-    potencial = min(ca_area, pav_area)
+def calcular_potencial_preliminar(area_lote_m2: float, ca: float,
+                                  taxa_ocupacao_pct: float = 0.0,
+                                  pavimentos_confirmados: int = 0,
+                                  area_existente_m2: float = 0.0) -> dict:
+    """Calcula limites preliminares sem aceitar pavimentos inferidos do campo cadastral gabarito."""
+    ca_area = area_lote_m2 * ca if ca > 0 else None
+    implantacao = area_lote_m2 * taxa_ocupacao_pct / 100.0 if taxa_ocupacao_pct > 0 else None
+    pav_area = implantacao * pavimentos_confirmados if (implantacao is not None and pavimentos_confirmados > 0) else None
+    candidatos=[x for x in [ca_area,pav_area] if x is not None]
+    menor=min(candidatos) if candidatos else None
     return {
         "area_lote_m2": area_lote_m2,
-        "potencial_pelo_ca_m2": round(ca_area, 2),
-        "implantacao_teorica_por_to_m2": round(implantacao, 2),
-        "potencial_teorico_por_pavimentos_m2": round(pav_area, 2),
-        "limitante_entre_ca_e_pavimentos": (
-            "CA" if ca_area < pav_area else
-            "PAVIMENTOS/TO" if pav_area < ca_area else "EMPATE"
+        "potencial_pelo_ca_m2": round(ca_area, 2) if ca_area is not None else None,
+        "implantacao_teorica_por_to_m2": round(implantacao, 2) if implantacao is not None else None,
+        "pavimentos_confirmados": pavimentos_confirmados if pavimentos_confirmados > 0 else None,
+        "potencial_teorico_por_pavimentos_m2": round(pav_area, 2) if pav_area is not None else None,
+        "comparacao_ca_vs_pavimentos": (
+            "PENDENTE — número de pavimentos legalmente admissível não confirmado" if pav_area is None else
+            "CA" if ca_area is not None and ca_area < pav_area else
+            "PAVIMENTOS/TO" if ca_area is not None and pav_area < ca_area else "EMPATE"
         ),
-        "potencial_teorico_preliminar_m2": round(potencial, 2),
-        "potencial_adicional_teorico_m2": round(max(0.0, potencial - area_existente_m2), 2),
-        "classificacao": "POTENCIAL TEÓRICO PRELIMINAR, NÃO POTENCIAL EDIFICÁVEL DEFINITIVO",
+        "menor_valor_matematico_disponivel_m2": round(menor,2) if menor is not None else None,
+        "fator_limitante_global": "PENDENTE",
+        "potencial_adicional_teorico_m2": round(max(0.0, menor - area_existente_m2), 2) if menor is not None else None,
+        "classificacao": "CÁLCULO MATEMÁTICO PRELIMINAR, NÃO POTENCIAL EDIFICÁVEL DEFINITIVO",
         "aviso": (
-            "Não representa potencial edificável definitivo. O cálculo não incorpora "
-            "recuos/afastamentos, envelope construtivo, altura legal confirmada, "
-            "restrições espaciais e demais regras específicas."
+            "Nunca preencher pavimentos_confirmados usando apenas o campo 'gabarito' do SISURB. "
+            "O cálculo não incorpora recuos/afastamentos, envelope construtivo, altura legal confirmada, "
+            "efeitos normativos das restrições espaciais e demais regras específicas. Enquanto esses itens estiverem pendentes, "
+            "não declarar CA ou TO×pavimentos como fator limitante global."
         ),
     }
-
 
 
 @mcp.tool()
@@ -728,7 +873,7 @@ def consultar_regra_urbanistica_jf(zona: str, modelo: str, uso: str = "não info
         ]
         result["pendencias"] = [
             "Confirmar recuos/afastamentos específicos do M3A no Anexo 8 vigente.",
-            "Confirmar altura/gabarito como regra legal, sem confundir com campo cadastral.",
+            "Confirmar altura/gabarito como regra legal, sem confundir com campo cadastral. O valor SISURB gabarito=3 NÃO deve ser convertido automaticamente em 3 pavimentos.",
             "Consultar espacialmente a camada de restrições do SISURB."
         ]
     return result
